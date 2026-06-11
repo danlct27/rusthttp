@@ -235,4 +235,67 @@ mod tests {
             assert_eq!(v & 0x0f0f, 0x0a0a, "GREASE value should match pattern");
         }
     }
+
+    #[test]
+    fn test_profile_json_from_str_valid() {
+        let json = r#"{
+            "_meta": {"browser": "Test", "version": "1.0"},
+            "tls": {
+                "cipher_suites": ["TLS_AES_128_GCM_SHA256"],
+                "supported_groups": ["X25519"],
+                "signature_algorithms": ["ecdsa_secp256r1_sha256"],
+                "grease": {"enabled": false},
+                "alps": {"enabled": false}
+            }
+        }"#;
+        let profile = ProfileJson::from_str(json).unwrap();
+        assert_eq!(profile.meta.browser, "Test");
+        assert_eq!(profile.tls.cipher_suites.len(), 1);
+    }
+
+    #[test]
+    fn test_profile_json_from_str_empty_ciphers() {
+        let json = r#"{
+            "_meta": {"browser": "Test", "version": "1.0"},
+            "tls": {
+                "cipher_suites": [],
+                "supported_groups": ["X25519"],
+                "signature_algorithms": ["ecdsa_secp256r1_sha256"],
+                "grease": {"enabled": false},
+                "alps": {"enabled": false}
+            }
+        }"#;
+        let result = ProfileJson::from_str(json);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_profile_json_from_str_invalid_json() {
+        let result = ProfileJson::from_str("not json");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_profile_all() {
+        let all = Profile::all();
+        assert!(all.len() >= 9);
+        assert!(all.contains(&Profile::Chrome149));
+    }
+
+    #[test]
+    fn test_profile_custom_filename_empty() {
+        assert_eq!(Profile::Custom.filename(), "");
+    }
+
+    #[test]
+    fn test_random_grease_cipher() {
+        let v = random_grease_cipher();
+        assert_eq!(v & 0x0f0f, 0x0a0a);
+    }
+
+    #[test]
+    fn test_random_grease_extension() {
+        let v = random_grease_extension();
+        assert_eq!(v & 0x0f0f, 0x0a0a);
+    }
 }
