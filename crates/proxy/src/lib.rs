@@ -1,7 +1,13 @@
 //! HTTP CONNECT proxy tunnel with authentication and rotation.
 //!
-//! Architecture:
-//! 1. TCP connect to proxy
-//! 2. Send HTTP/1.1 CONNECT target:443
-//! 3. Read 200 response
-//! 4. Hand socket to TLS layer (SNI = target, verify = target)
+//! Establishes a TCP tunnel through an HTTP proxy via the CONNECT method.
+//! The returned `TcpStream` is handed to the TLS layer which sets SNI and
+//! certificate verification to the target hostname.
+
+pub mod error;
+pub mod rotation;
+pub mod tunnel;
+
+pub use error::ProxyError;
+pub use rotation::{ProxyPool, RotationStrategy};
+pub use tunnel::{establish_tunnel, ProxyConfig};
