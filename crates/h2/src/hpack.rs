@@ -51,6 +51,9 @@ fn static_find_name(name: &str) -> Option<usize> {
 }
 
 // Dynamic Table
+const MAX_TABLE_SIZE_CAP: usize = 65536;
+const MAX_HEADER_VALUE_LEN: usize = 16384;
+
 struct DynTable {
     entries: Vec<(String, String)>,
     size: usize,
@@ -76,10 +79,18 @@ impl DynTable {
     }
 
     fn set_max(&mut self, max: usize) {
-        self.max_size = max;
+        self.max_size = max.min(MAX_TABLE_SIZE_CAP);
         while self.size > self.max_size && !self.entries.is_empty() {
             if let Some((n, v)) = self.entries.pop() { self.size -= n.len() + v.len() + 32; }
         }
+    }
+
+    fn find_exact(&self, name: &str, value: &str) -> Option<usize> {
+        self.entries.iter().position(|(n, v)| n == name && v == value)
+    }
+
+    fn find_name(&self, name: &str) -> Option<usize> {
+        self.entries.iter().position(|(n, _)| n == name)
     }
 }
 
@@ -184,14 +195,15 @@ fn huff_decode(input: &[u8]) -> Result<Vec<u8>, H2Error> {
             if nbits < 5 { break 'sym; }
             let mut found = false;
             for (sym, &(code, len)) in HUFF.iter().enumerate().take(256) {
-                if len <= nbits {
-                    if (bits >> (nbits - len)) as u32 == code {
-                        out.push(sym as u8);
-                        nbits -= len;
-                        bits &= (1u64 << nbits) - 1;
-                        found = true;
-                        break;
+                if len <= nbits && (bits >> (nbits - len)) as u32 == code {
+                    out.push(sym as u8);
+                    if out.len() > MAX_HEADER_VALUE_LEN {
+                        return Err(H2Error::Hpack("decoded header too large".into()));
                     }
+                    nbits -= len;
+                    bits &= (1u64 << nbits) - 1;
+                    found = true;
+                    break;
                 }
             }
             if !found { break 'sym; }
@@ -223,9 +235,12 @@ fn decode_str(data: &[u8], pos: &mut usize) -> Result<String, H2Error> {
 
 // Chrome: these headers use literal-without-indexing
 const NO_INDEX: &[&str] = &[
-    "content-type", "accept", "user-agent", "cookie",
+    "content-type", "accept", "user-agent",
     "accept-encoding", "accept-language", "referer", "content-length",
 ];
+
+// Sensitive headers: use literal-never-indexed (0x10 prefix)
+const NEVER_INDEX: &[&str] = &["cookie", "authorization"];
 
 /// Chrome-style HPACK encoder.
 pub struct ChromeEncoder { dyn_table: DynTable }
@@ -246,9 +261,21 @@ impl HpackEncoder for ChromeEncoder {
                 encode_int(&mut buf, idx, 7, 0x80);
                 continue;
             }
-            let name_idx = static_find_name(name).unwrap_or(0);
-            // Chrome: no-index for variable headers
-            if NO_INDEX.contains(&name.as_str()) {
+            // Try exact dynamic match → indexed
+            if let Some(di) = self.dyn_table.find_exact(name, value) {
+                encode_int(&mut buf, 62 + di, 7, 0x80);
+                continue;
+            }
+            let name_idx = static_find_name(name)
+                .or_else(|| self.dyn_table.find_name(name).map(|i| 62 + i))
+                .unwrap_or(0);
+            // Sensitive headers: never-indexed (0x10 prefix)
+            if NEVER_INDEX.contains(&name.as_str()) {
+                encode_int(&mut buf, name_idx, 4, 0x10);
+                if name_idx == 0 { encode_str_huff(&mut buf, name); }
+                encode_str_huff(&mut buf, value);
+            } else if NO_INDEX.contains(&name.as_str()) {
+                // Chrome: no-index for variable headers
                 encode_int(&mut buf, name_idx, 4, 0x00);
                 if name_idx == 0 { encode_str_huff(&mut buf, name); }
                 encode_str_huff(&mut buf, value);
@@ -387,6 +414,76 @@ mod tests {
             ("content-type".into(), "application/json".into()),
             ("user-agent".into(), "Mozilla/5.0".into()),
         ];
+        let encoded = enc.encode(&h);
+        let decoded = dec.decode(&encoded).unwrap();
+        assert_eq!(decoded, h);
+    }
+
+    #[test]
+    fn test_dyn_table_max_cap() {
+        let mut t = DynTable::new(4096);
+        t.set_max(999999);
+        assert_eq!(t.max_size, MAX_TABLE_SIZE_CAP);
+    }
+
+    #[test]
+    fn test_encoder_dynamic_reuse() {
+        let mut enc = ChromeEncoder::new(4096);
+        let h = vec![(":authority".into(), "example.com".into())];
+        let first = enc.encode(&h);
+        let second = enc.encode(&h);
+        // Second encode should be shorter (indexed from dynamic table)
+        assert!(second.len() < first.len());
+        // Second should start with 0x80 prefix (indexed representation)
+        assert!(second[0] & 0x80 != 0);
+    }
+
+    #[test]
+    fn test_never_indexed_cookie() {
+        let mut enc = ChromeEncoder::new(4096);
+        let h = vec![("cookie".into(), "session=abc".into())];
+        let buf = enc.encode(&h);
+        // cookie is static index 31. 4-bit prefix: 31 > 15, so first byte = 0x1f (0x10 | 0x0f)
+        assert_eq!(buf[0], 0x1f);
+    }
+
+    #[test]
+    fn test_never_indexed_authorization() {
+        let mut enc = ChromeEncoder::new(4096);
+        let h = vec![("authorization".into(), "Bearer xyz".into())];
+        let buf = enc.encode(&h);
+        // authorization is static index 23. 4-bit prefix: 23 > 15, so first byte = 0x1f
+        assert_eq!(buf[0], 0x1f);
+    }
+
+    #[test]
+    fn test_huff_decode_max_len() {
+        // 'a' huffs to 5 bits (0x03). Craft input that decodes to >16KB.
+        // Each byte of 0x18 repeated would decode multiple 'a's.
+        // Simpler: 16385 bytes of 'a' huffed is ~10241 bytes input.
+        let input = "a".repeat(MAX_HEADER_VALUE_LEN + 1);
+        let encoded = huff_encode(input.as_bytes());
+        let result = huff_decode(&encoded);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_decode_dynamic_table_size_update() {
+        let mut dec = StandardDecoder::new(4096);
+        // Encode a size update to 2048: prefix 0x20, value 2048
+        let mut buf = BytesMut::new();
+        encode_int(&mut buf, 2048, 5, 0x20);
+        let headers = dec.decode(&buf).unwrap();
+        assert!(headers.is_empty());
+        assert_eq!(dec.dyn_table.max_size, 2048);
+    }
+
+    #[test]
+    fn test_large_header_roundtrip() {
+        let mut enc = ChromeEncoder::new(4096);
+        let mut dec = StandardDecoder::new(4096);
+        let big_val = "x".repeat(1000);
+        let h = vec![("x-custom".into(), big_val)];
         let encoded = enc.encode(&h);
         let decoded = dec.decode(&encoded).unwrap();
         assert_eq!(decoded, h);
