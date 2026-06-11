@@ -10,3 +10,8 @@
 
 pub mod config;
 pub mod connector;
+pub mod error;
+
+pub use config::TlsProfile;
+pub use connector::TlsConnector;
+pub use error::TlsError;
