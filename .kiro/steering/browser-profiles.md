@@ -20,16 +20,33 @@ let client = Client::builder()
     .build()?;
 ```
 
-## 預設 Profiles（MVP 必須有）
+## 預設 Profiles（Full Coverage）
 
-| Profile | TLS | HTTP/2 | Priority |
-|---------|-----|--------|----------|
-| `Chrome136` | Chrome 136 ClientHello | Chrome SETTINGS | P0 (default) |
-| `Chrome135` | Chrome 135 | Chrome SETTINGS | P1 |
-| `Chrome134` | Chrome 134 | Chrome SETTINGS | P1 |
-| `Edge136` | Edge 136 (same as Chrome) | Chrome SETTINGS | P2 |
-| `Firefox128` | Firefox 128 ClientHello | Firefox SETTINGS | P2 |
-| `Safari18` | Safari 18 ClientHello | Safari SETTINGS | P2 |
+### Tier 1 — P0（MVP must-have）
+| Profile | File | Platform | Notes |
+|---------|------|----------|-------|
+| `Chrome137` | `chrome-137.json` | Desktop (Win/macOS/Linux) | **Default** |
+| `Chrome136` | `chrome-136.json` | Desktop | Fallback |
+| `Chrome136Android` | `chrome-136-android.json` | Android | Mobile fingerprint |
+| `Chrome136Ios` | `chrome-136-ios.json` | iOS | BoringSSL subset |
+| `Edge137` | `edge-137.json` | Desktop | Same TLS as Chrome, different UA |
+| `Safari18` | `safari-18.json` | macOS | Different SETTINGS + extension order |
+| `Safari18Ios` | `safari-18-ios.json` | iPhone | |
+| `Safari18Ipad` | `safari-18-ipad.json` | iPad | |
+| `Firefox139` | `firefox-139.json` | Desktop | No GREASE, no ALPS |
+| `Firefox128` | `firefox-128.json` | Desktop (ESR) | |
+| `Firefox128Android` | `firefox-128-android.json` | Android | |
+
+### Tier 2 — P1（Ship with v1.0）
+| Profile | File | Platform | Notes |
+|---------|------|----------|-------|
+| `Opera116` | `opera-116.json` | Desktop | Chromium-based |
+| `Samsung27` | `samsung-27.json` | Android | Chromium-based, 大亞洲市場 |
+| `QQ15` | `qq-15.json` | Android/Desktop | 中國市場必備 |
+| `Brave176` | `brave-1.76.json` | Desktop | Chromium + privacy tweaks |
+| `Vivaldi7` | `vivaldi-7.json` | Desktop | Chromium-based |
+| `Yandex25` | `yandex-25.json` | Desktop | 俄羅斯市場 |
+| `UC16` | `uc-16.json` | Android | 印度/東南亞市場 |
 
 ## Profile JSON Schema
 
