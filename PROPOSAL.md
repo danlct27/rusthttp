@@ -1,18 +1,18 @@
-# rusthttptool — Project Proposal & Checkpoint Plan
+# rusthttp — Project Proposal & Checkpoint Plan
 
 > 基於 10-agent 3-round discussion 嘅 consensus。所有開發必須跟呢份 doc。
 
 ## 1. Project Identity
 
-- **Name**: `rusthttptool`
-- **Repo**: `github.com/danlct27/rusthttptool`
+- **Name**: `rusthttp`
+- **Repo**: `github.com/danlct27/rusthttp`
 - **定位**: Lightweight anti-fingerprint HTTP client — Chrome TLS + HTTP/2 parity, from scratch
 - **唔係 fork**: 唔 fork wreq / specters / reqwest / h2 / hyper
 
 ## 2. Architecture（Final — 4 Crate Workspace）
 
 ```
-rusthttptool/
+rusthttp/
 ├── Cargo.toml (workspace)
 ├── crates/
 │   ├── tls/       # BoringSSL binding + Chrome ClientHello fingerprint
@@ -172,7 +172,7 @@ serde_json = "1"
 
 ## 11. Day 1 Actions
 
-1. ☐ Create GitHub repo (`danlct27/rusthttptool`)
+1. ☐ Create GitHub repo (`danlct27/rusthttp`)
 2. ☐ Push existing scaffold
 3. ☐ Capture Chrome 137 pcap (`chrome://net-export/`) — golden file for CI
 4. ☐ Verify: does Akamai check PRIORITY frames? (10 min experiment)

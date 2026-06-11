@@ -1,8 +1,8 @@
-//! rusthttptool — Lightweight Rust HTTP client with Chrome TLS/HTTP2 fingerprint parity.
+//! rusthttp — Lightweight Rust HTTP client with Chrome TLS/HTTP2 fingerprint parity.
 //!
 //! # Example
 //! ```no_run
-//! use rusthttptool::Client;
+//! use rusthttp::Client;
 //!
 //! #[tokio::main]
 //! async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -17,9 +17,9 @@
 //! }
 //! ```
 
-pub use rusthttptool_h2 as h2;
-pub use rusthttptool_proxy as proxy;
-pub use rusthttptool_tls as tls;
+pub use rusthttp_h2 as h2;
+pub use rusthttp_proxy as proxy;
+pub use rusthttp_tls as tls;
 
 pub struct Client;
 pub struct ClientBuilder;

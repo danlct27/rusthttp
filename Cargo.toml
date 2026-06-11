@@ -7,7 +7,7 @@ version = "0.1.0"
 edition = "2024"
 license = "MIT"
 authors = ["Dan Li"]
-repository = "https://github.com/danlct27/rusthttptool"
+repository = "https://github.com/danlct27/rusthttp"
 description = "Lightweight Rust HTTP client with Chrome TLS/HTTP2 fingerprint parity"
 
 [workspace.dependencies]

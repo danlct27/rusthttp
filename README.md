@@ -1,4 +1,4 @@
-# rusthttptool
+# rusthttp
 
 Lightweight Rust HTTP client with Chrome TLS/HTTP2 fingerprint parity.
 
@@ -30,7 +30,7 @@ Akamai: 1:65536;2:0;4:6291456;6:262144|15663105|0|m,a,s,p
 ## Usage
 
 ```rust
-use rusthttptool::Client;
+use rusthttp::Client;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
