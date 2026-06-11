@@ -57,7 +57,7 @@ impl Profile {
             Self::Yandex25 => "yandex-25.json",
             Self::QQ15 => "qq-15.json",
             Self::UC16 => "uc-16.json",
-            Self::DuckDuckGo => "duckduckgo.json",
+            Self::DuckDuckGo => "duckduckgo-ios.json",
             Self::Custom => "",
         }
     }
@@ -169,8 +169,24 @@ impl ProfileJson {
 
     /// Parse a profile from a JSON string.
     pub fn from_str(json: &str) -> Result<Self, TlsError> {
-        serde_json::from_str(json)
-            .map_err(|e| TlsError::ConfigMsg(format!("Failed to parse profile JSON: {e}")))
+        let profile: Self = serde_json::from_str(json)
+            .map_err(|e| TlsError::ConfigMsg(format!("Failed to parse profile JSON: {e}")))?;
+        profile.validate()?;
+        Ok(profile)
+    }
+
+    /// Validate that required fields are non-empty.
+    fn validate(&self) -> Result<(), TlsError> {
+        if self.tls.cipher_suites.is_empty() {
+            return Err(TlsError::ConfigMsg("cipher_suites must not be empty".into()));
+        }
+        if self.tls.supported_groups.is_empty() {
+            return Err(TlsError::ConfigMsg("supported_groups must not be empty".into()));
+        }
+        if self.tls.signature_algorithms.is_empty() {
+            return Err(TlsError::ConfigMsg("signature_algorithms must not be empty".into()));
+        }
+        Ok(())
     }
 
     /// Load a built-in profile by enum.

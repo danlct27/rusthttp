@@ -45,6 +45,8 @@ pub struct TlsProfile {
     pub permute_extensions: bool,
     /// ALPN protocols to advertise (e.g., ["h2", "http/1.1"]).
     pub alpn_protocols: Vec<String>,
+    /// Extension order from JSON profile (if provided).
+    pub extensions_order: Option<Vec<String>>,
 }
 
 impl TlsProfile {
@@ -52,15 +54,24 @@ impl TlsProfile {
     pub fn chrome149() -> Self {
         Self {
             cipher_suites: vec![
+                // TLS 1.3 ciphers
                 "TLS_AES_128_GCM_SHA256".into(),
                 "TLS_AES_256_GCM_SHA384".into(),
                 "TLS_CHACHA20_POLY1305_SHA256".into(),
+                // TLS 1.2 ECDHE ciphers
                 "TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256".into(),
                 "TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256".into(),
                 "TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384".into(),
                 "TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384".into(),
                 "TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256".into(),
                 "TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256".into(),
+                // CBC + RSA fallback (Chrome 149 includes these)
+                "TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA".into(),
+                "TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA".into(),
+                "TLS_RSA_WITH_AES_128_GCM_SHA256".into(),
+                "TLS_RSA_WITH_AES_256_GCM_SHA384".into(),
+                "TLS_RSA_WITH_AES_128_CBC_SHA".into(),
+                "TLS_RSA_WITH_AES_256_CBC_SHA".into(),
             ],
             supported_groups: vec![
                 "X25519MLKEM768".into(),
@@ -76,6 +87,7 @@ impl TlsProfile {
             max_version: SslVersion::TLS1_3,
             permute_extensions: true,
             alpn_protocols: vec!["h2".into(), "http/1.1".into()],
+            extensions_order: None,
         }
     }
 
@@ -115,6 +127,7 @@ impl TlsProfile {
             max_version,
             permute_extensions: tls.grease.enabled, // Chrome permutes when GREASE enabled
             alpn_protocols: tls.alps.protocols.clone().unwrap_or_else(|| vec!["h2".into(), "http/1.1".into()]),
+            extensions_order: tls.extensions_order.clone(),
         })
     }
 
@@ -233,7 +246,7 @@ mod tests {
     #[test]
     fn test_chrome149_has_correct_cipher_count() {
         let p = TlsProfile::chrome149();
-        assert_eq!(p.cipher_suites.len(), 9);
+        assert_eq!(p.cipher_suites.len(), 15);
     }
 
     #[test]
@@ -256,7 +269,7 @@ mod tests {
             .build();
         assert!(!p.grease);
         // Other fields unchanged
-        assert_eq!(p.cipher_suites.len(), 9);
+        assert_eq!(p.cipher_suites.len(), 15);
     }
 
     #[test]

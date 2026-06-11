@@ -4,13 +4,56 @@
 //! MUST be set to the TARGET hostname (not the proxy). This is handled by
 //! passing the target `host` to `tokio_boring::connect`.
 
-use boring::ssl::{SslConnector, SslMethod, SslVerifyMode};
+use boring::ssl::{CertificateCompressionAlgorithm, CertificateCompressor, SslConnector, SslMethod, SslVerifyMode};
 use tokio::net::TcpStream;
 use tokio_boring::SslStream;
 use tracing::debug;
 
 use crate::config::{CertCompression, TlsProfile};
 use crate::error::TlsError;
+
+/// Brotli certificate compressor using boring's safe CertificateCompressor trait.
+struct BrotliCertCompressor;
+
+impl CertificateCompressor for BrotliCertCompressor {
+    const ALGORITHM: CertificateCompressionAlgorithm = CertificateCompressionAlgorithm::BROTLI;
+    const CAN_COMPRESS: bool = false;
+    const CAN_DECOMPRESS: bool = true;
+
+    fn decompress<W>(&self, input: &[u8], output: &mut W) -> std::io::Result<()>
+    where
+        W: std::io::Write,
+    {
+        let mut cursor = std::io::Cursor::new(input);
+        let mut buf = Vec::new();
+        // Use brotli-decompressor crate or fallback: BoringSSL handles decompression
+        // internally once the algorithm is registered. We provide a minimal impl.
+        brotli::BrotliDecompress(&mut cursor, &mut buf)?;
+        output.write_all(&buf)?;
+        Ok(())
+    }
+}
+
+/// Zlib certificate compressor using boring's safe CertificateCompressor trait.
+struct ZlibCertCompressor;
+
+impl CertificateCompressor for ZlibCertCompressor {
+    const ALGORITHM: CertificateCompressionAlgorithm = CertificateCompressionAlgorithm::ZLIB;
+    const CAN_COMPRESS: bool = false;
+    const CAN_DECOMPRESS: bool = true;
+
+    fn decompress<W>(&self, input: &[u8], output: &mut W) -> std::io::Result<()>
+    where
+        W: std::io::Write,
+    {
+        use std::io::Read;
+        let mut decoder = flate2::read::ZlibDecoder::new(input);
+        let mut buf = Vec::new();
+        decoder.read_to_end(&mut buf)?;
+        output.write_all(&buf)?;
+        Ok(())
+    }
+}
 
 /// Establishes TLS connections with a browser-matching fingerprint.
 ///
@@ -61,6 +104,9 @@ impl TlsConnector {
     fn build_connector(&self) -> Result<SslConnector, TlsError> {
         let mut builder = SslConnector::builder(SslMethod::tls_client())?;
 
+        // Load system CA certificates
+        builder.set_default_verify_paths()?;
+
         // TLS version bounds
         builder.set_min_proto_version(Some(self.profile.min_version))?;
         builder.set_max_proto_version(Some(self.profile.max_version))?;
@@ -88,51 +134,32 @@ impl TlsConnector {
             builder.set_verify(SslVerifyMode::PEER);
         }
 
-        // Unsafe BoringSSL FFI for fingerprint features
-        let ctx_ptr = builder.as_ptr();
-
+        // GREASE (RFC 8701) — safe wrapper in boring v4
         if self.profile.grease {
-            // SAFETY: ctx_ptr is valid — we own the builder and it has not been
-            // consumed. SSL_CTX_set_grease_enabled enables GREASE (RFC 8701).
-            unsafe {
-                boring_sys::SSL_CTX_set_grease_enabled(ctx_ptr, 1);
-            }
+            builder.set_grease_enabled(true);
         }
 
+        // Extension permutation — safe wrapper in boring v4
         if self.profile.permute_extensions {
-            // SAFETY: ctx_ptr is valid — same lifetime as builder.
-            // SSL_CTX_set_permute_extensions randomises extension order.
-            unsafe {
-                boring_sys::SSL_CTX_set_permute_extensions(ctx_ptr, 1);
-            }
+            builder.set_permute_extensions(true);
         }
 
+        // Certificate compression — safe CertificateCompressor trait
         match self.profile.cert_compression {
             CertCompression::Brotli => {
-                // SAFETY: ctx_ptr is valid. Registers brotli (alg_id=2) for
-                // certificate compression per RFC 8879.
-                unsafe {
-                    boring_sys::SSL_CTX_add_cert_compression_alg(
-                        ctx_ptr,
-                        2, // TLSEXT_cert_compression_brotli
-                        None,
-                        Some(brotli_decompress_cb),
-                    );
-                }
+                builder.add_certificate_compression_algorithm(BrotliCertCompressor)?;
             }
             CertCompression::Zlib => {
-                // SAFETY: ctx_ptr is valid. Registers zlib (alg_id=1).
-                unsafe {
-                    boring_sys::SSL_CTX_add_cert_compression_alg(
-                        ctx_ptr,
-                        1, // TLSEXT_cert_compression_zlib
-                        None,
-                        None, // zlib decompression not implemented yet
-                    );
-                }
+                builder.add_certificate_compression_algorithm(ZlibCertCompressor)?;
             }
             CertCompression::None => {}
         }
+
+        // Enable OCSP stapling
+        builder.enable_ocsp_stapling();
+
+        // Enable Signed Certificate Timestamps (SCT)
+        builder.enable_signed_cert_timestamps();
 
         Ok(builder.build())
     }
@@ -177,21 +204,4 @@ fn encode_alpn(protocols: &[String]) -> Vec<u8> {
         buf.extend_from_slice(proto.as_bytes());
     }
     buf
-}
-
-/// Brotli decompression callback for certificate compression (RFC 8879).
-///
-/// # Safety
-/// Called by BoringSSL during handshake. Pointers are valid for the duration
-/// of the call as guaranteed by the BoringSSL API contract.
-unsafe extern "C" fn brotli_decompress_cb(
-    _ssl: *mut boring_sys::SSL,
-    _out: *mut *mut boring_sys::CRYPTO_BUFFER,
-    _uncompressed_len: usize,
-    _in_ptr: *const u8,
-    _in_len: usize,
-) -> ::std::os::raw::c_int {
-    // TODO: implement actual brotli decompression when needed
-    // For now, BoringSSL handles it internally once registered.
-    1
 }
