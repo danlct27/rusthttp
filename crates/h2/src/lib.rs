@@ -65,4 +65,8 @@ pub enum H2Error {
     /// Invalid stream state transition.
     #[error("invalid stream state: {0}")]
     InvalidState(String),
+
+    /// HPACK decoding error.
+    #[error("hpack: {0}")]
+    Hpack(String),
 }
