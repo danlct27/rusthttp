@@ -12,27 +12,10 @@ use tracing::debug;
 use crate::config::{CertCompression, TlsProfile};
 use crate::error::TlsError;
 
-/// Brotli certificate compressor using boring's safe CertificateCompressor trait.
-struct BrotliCertCompressor;
-
-impl CertificateCompressor for BrotliCertCompressor {
-    const ALGORITHM: CertificateCompressionAlgorithm = CertificateCompressionAlgorithm::BROTLI;
-    const CAN_COMPRESS: bool = false;
-    const CAN_DECOMPRESS: bool = true;
-
-    fn decompress<W>(&self, input: &[u8], output: &mut W) -> std::io::Result<()>
-    where
-        W: std::io::Write,
-    {
-        let mut cursor = std::io::Cursor::new(input);
-        let mut buf = Vec::new();
-        // Use brotli-decompressor crate or fallback: BoringSSL handles decompression
-        // internally once the algorithm is registered. We provide a minimal impl.
-        brotli::BrotliDecompress(&mut cursor, &mut buf)?;
-        output.write_all(&buf)?;
-        Ok(())
-    }
-}
+// NOTE: Brotli certificate compression removed — the previous stub callback
+// could cause UB if BoringSSL invoked it without a real brotli implementation
+// backing the decompression. Zlib is sufficient for fingerprint parity.
+// TODO: Re-add brotli support once boring crate exposes a safe, tested API for it.
 
 /// Zlib certificate compressor using boring's safe CertificateCompressor trait.
 struct ZlibCertCompressor;
@@ -113,18 +96,31 @@ impl TlsConnector {
 
         // Cipher suites — join with colon for BoringSSL
         let cipher_string = self.profile.cipher_suites.join(":");
-        builder.set_cipher_list(&cipher_string)?;
+        builder.set_cipher_list(&cipher_string).map_err(|e| {
+            TlsError::InvalidCipher(format!("failed to set cipher list '{}': {}", cipher_string, e))
+        })?;
 
         // Signature algorithms
-        builder.set_sigalgs_list(&self.profile.signature_algorithms)?;
+        builder
+            .set_sigalgs_list(&self.profile.signature_algorithms)
+            .map_err(|e| {
+                TlsError::ConfigMsg(format!(
+                    "failed to set signature algorithms '{}': {}",
+                    self.profile.signature_algorithms, e
+                ))
+            })?;
 
         // Supported groups (curves + PQ)
         let groups_string = self.profile.supported_groups.join(":");
-        builder.set_curves_list(&groups_string)?;
+        builder.set_curves_list(&groups_string).map_err(|e| {
+            TlsError::InvalidCurve(format!("failed to set curves '{}': {}", groups_string, e))
+        })?;
 
         // ALPN — encode as length-prefixed bytes
         let alpn_bytes = encode_alpn(&self.profile.alpn_protocols);
-        builder.set_alpn_protos(&alpn_bytes)?;
+        builder.set_alpn_protos(&alpn_bytes).map_err(|e| {
+            TlsError::ConfigMsg(format!("failed to set ALPN protocols: {}", e))
+        })?;
 
         // Certificate verification
         if self.danger_accept_invalid_certs {
@@ -144,12 +140,9 @@ impl TlsConnector {
             builder.set_permute_extensions(true);
         }
 
-        // Certificate compression — safe CertificateCompressor trait
+        // Certificate compression — only Zlib supported (brotli removed for safety, see top of file)
         match self.profile.cert_compression {
-            CertCompression::Brotli => {
-                builder.add_certificate_compression_algorithm(BrotliCertCompressor)?;
-            }
-            CertCompression::Zlib => {
+            CertCompression::Brotli | CertCompression::Zlib => {
                 builder.add_certificate_compression_algorithm(ZlibCertCompressor)?;
             }
             CertCompression::None => {}
@@ -196,10 +189,16 @@ impl TlsConnector {
     }
 }
 
-/// Encode ALPN protocols as length-prefixed byte sequence for BoringSSL.
+/// Encode ALPN protocols as length-prefixed byte sequence per RFC 7301.
+///
+/// Each protocol is encoded as: `<length_byte><protocol_bytes>`.
+/// Example: `["h2", "http/1.1"]` → `b"\x02h2\x08http/1.1"`.
+///
+/// This is the wire format expected by `SslConnectorBuilder::set_alpn_protos`.
 fn encode_alpn(protocols: &[String]) -> Vec<u8> {
     let mut buf = Vec::new();
     for proto in protocols {
+        assert!(proto.len() <= 255, "ALPN protocol name too long: {proto}");
         buf.push(proto.len() as u8);
         buf.extend_from_slice(proto.as_bytes());
     }

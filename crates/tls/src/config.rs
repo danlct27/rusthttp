@@ -93,6 +93,93 @@ pub mod cipher_id {
     }
 }
 
+// --- TLS Extension Type Constants (IANA registry, RFC 8446 + extensions) ---
+// Reference: https://www.iana.org/assignments/tls-extensiontype-values/
+
+/// TLS Extension Type IDs used by Chrome 149.
+/// Each constant documents the RFC source and Chrome's usage.
+pub mod extension_type {
+    /// server_name (RFC 6066) — SNI
+    pub const SERVER_NAME: u16 = 0;
+    /// extended_master_secret (RFC 7627)
+    pub const EXTENDED_MASTER_SECRET: u16 = 23;
+    /// renegotiation_info (RFC 5746)
+    pub const RENEGOTIATION_INFO: u16 = 0xFF01;
+    /// supported_groups (RFC 8422, was "elliptic_curves")
+    pub const SUPPORTED_GROUPS: u16 = 10;
+    /// ec_point_formats (RFC 8422)
+    pub const EC_POINT_FORMATS: u16 = 11;
+    /// session_ticket (RFC 5077)
+    pub const SESSION_TICKET: u16 = 35;
+    /// application_layer_protocol_negotiation (RFC 7301)
+    pub const ALPN: u16 = 16;
+    /// status_request / OCSP stapling (RFC 6066)
+    pub const STATUS_REQUEST: u16 = 5;
+    /// delegated_credentials (draft-ietf-tls-subcerts)
+    pub const DELEGATED_CREDENTIALS: u16 = 34;
+    /// key_share (RFC 8446)
+    pub const KEY_SHARE: u16 = 51;
+    /// supported_versions (RFC 8446)
+    pub const SUPPORTED_VERSIONS: u16 = 43;
+    /// signature_algorithms (RFC 8446)
+    pub const SIGNATURE_ALGORITHMS: u16 = 13;
+    /// psk_key_exchange_modes (RFC 8446)
+    pub const PSK_KEY_EXCHANGE_MODES: u16 = 45;
+    /// record_size_limit (RFC 8449)
+    pub const RECORD_SIZE_LIMIT: u16 = 28;
+    /// padding (RFC 7685)
+    pub const PADDING: u16 = 21;
+    /// compress_certificate (RFC 8879)
+    pub const COMPRESS_CERTIFICATE: u16 = 27;
+    /// application_settings / ALPS (draft-vvv-tls-alps)
+    pub const APPLICATION_SETTINGS: u16 = 17513;
+
+    /// All Chrome 149 extension type IDs in expected order.
+    pub const CHROME_149_IDS: &[u16] = &[
+        SERVER_NAME,
+        EXTENDED_MASTER_SECRET,
+        RENEGOTIATION_INFO,
+        SUPPORTED_GROUPS,
+        EC_POINT_FORMATS,
+        SESSION_TICKET,
+        ALPN,
+        STATUS_REQUEST,
+        DELEGATED_CREDENTIALS,
+        KEY_SHARE,
+        SUPPORTED_VERSIONS,
+        SIGNATURE_ALGORITHMS,
+        PSK_KEY_EXCHANGE_MODES,
+        RECORD_SIZE_LIMIT,
+        PADDING,
+        COMPRESS_CERTIFICATE,
+        APPLICATION_SETTINGS,
+    ];
+
+    /// Map extension name to its IANA type ID. Returns `None` for unknown names.
+    pub fn from_name(name: &str) -> Option<u16> {
+        match name {
+            "server_name" => Some(SERVER_NAME),
+            "extended_master_secret" => Some(EXTENDED_MASTER_SECRET),
+            "renegotiation_info" => Some(RENEGOTIATION_INFO),
+            "supported_groups" => Some(SUPPORTED_GROUPS),
+            "ec_point_formats" => Some(EC_POINT_FORMATS),
+            "session_ticket" => Some(SESSION_TICKET),
+            "application_layer_protocol_negotiation" => Some(ALPN),
+            "status_request" => Some(STATUS_REQUEST),
+            "delegated_credentials" => Some(DELEGATED_CREDENTIALS),
+            "key_share" => Some(KEY_SHARE),
+            "supported_versions" => Some(SUPPORTED_VERSIONS),
+            "signature_algorithms" => Some(SIGNATURE_ALGORITHMS),
+            "psk_key_exchange_modes" => Some(PSK_KEY_EXCHANGE_MODES),
+            "record_size_limit" => Some(RECORD_SIZE_LIMIT),
+            "padding" => Some(PADDING),
+            "compress_certificate" => Some(COMPRESS_CERTIFICATE),
+            "application_settings" => Some(APPLICATION_SETTINGS),
+            _ => None,
+        }
+    }
+}
+
 /// Chrome 149 expected extension order (excluding GREASE placeholders).
 const CHROME_149_EXTENSION_ORDER: &[&str] = &[
     "server_name",
@@ -116,13 +203,21 @@ const CHROME_149_EXTENSION_ORDER: &[&str] = &[
 
 /// Validate that the configured extension order matches Chrome's expected order.
 ///
-/// Logs a warning if extensions differ. GREASE entries are stripped before comparison.
+/// Strips GREASE entries, then verifies each extension name maps to a known
+/// IANA type ID. Logs warnings for unknown extensions or order mismatches.
 pub fn validate_extension_order(extensions: &[String]) {
     let filtered: Vec<&str> = extensions
         .iter()
         .map(|s| s.as_str())
         .filter(|s| *s != "grease")
         .collect();
+
+    // Validate each extension resolves to a known type ID
+    for ext in &filtered {
+        if extension_type::from_name(ext).is_none() {
+            warn!(extension = %ext, "unknown TLS extension name — not in Chrome 149 set");
+        }
+    }
 
     if filtered.as_slice() != CHROME_149_EXTENSION_ORDER {
         warn!(

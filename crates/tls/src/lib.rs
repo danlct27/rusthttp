@@ -36,7 +36,7 @@ pub mod connector;
 pub mod error;
 pub mod profile;
 
-pub use config::{CertCompression, TlsProfile, TlsProfileBuilder, cipher_id, validate_extension_order};
+pub use config::{CertCompression, TlsProfile, TlsProfileBuilder, cipher_id, extension_type, validate_extension_order};
 pub use connector::TlsConnector;
 pub use error::{TlsError, SslAlert};
 pub use profile::{Profile, ProfileJson, random_grease_value};
