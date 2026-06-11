@@ -98,11 +98,20 @@ impl StreamIdAllocator {
         Self { next: 1 }
     }
 
+    /// Peek at the next stream ID without consuming it.
+    pub fn peek(&self) -> u32 {
+        self.next
+    }
+
     /// Allocate the next stream ID.
-    pub fn next_id(&mut self) -> u32 {
+    /// Returns error if stream ID space is exhausted (> 2^31 - 1).
+    pub fn next_id(&mut self) -> Result<u32, H2Error> {
+        if self.next > 0x7FFF_FFFF {
+            return Err(H2Error::Protocol("stream ID space exhausted".into()));
+        }
         let id = self.next;
         self.next += 2;
-        id
+        Ok(id)
     }
 }
 

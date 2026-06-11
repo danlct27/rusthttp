@@ -6,11 +6,38 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use crate::frame::{Frame, FrameHeader, FRAME_HEADER_SIZE};
 use crate::H2Error;
 
+/// Default max frame size per RFC 7540 §4.2 (can be raised via SETTINGS).
+const DEFAULT_MAX_FRAME_SIZE: u32 = 16_384;
+
+/// Absolute max frame size allowed by RFC 7540 §4.2.
+const MAX_ALLOWED_FRAME_SIZE: u32 = 16_777_215;
+
 /// Read a single HTTP/2 frame from an async reader.
 pub async fn read_frame<R: AsyncRead + Unpin>(reader: &mut R) -> Result<Frame, H2Error> {
+    read_frame_with_max(reader, DEFAULT_MAX_FRAME_SIZE).await
+}
+
+/// Read a single HTTP/2 frame, enforcing a max payload size.
+pub async fn read_frame_with_max<R: AsyncRead + Unpin>(
+    reader: &mut R,
+    max_frame_size: u32,
+) -> Result<Frame, H2Error> {
     let mut header_buf = [0u8; FRAME_HEADER_SIZE];
     reader.read_exact(&mut header_buf).await?;
     let header = FrameHeader::decode(&header_buf);
+
+    // SETTINGS and GOAWAY may legitimately be larger, but cap at protocol max
+    let limit = if header.frame_type == 0x4 || header.frame_type == 0x7 {
+        MAX_ALLOWED_FRAME_SIZE
+    } else {
+        max_frame_size
+    };
+    if header.length > limit {
+        return Err(H2Error::Protocol(format!(
+            "frame size {} exceeds max {}",
+            header.length, limit
+        )));
+    }
 
     let mut payload_buf = vec![0u8; header.length as usize];
     if header.length > 0 {

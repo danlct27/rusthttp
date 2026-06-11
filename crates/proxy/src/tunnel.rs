@@ -1,19 +1,41 @@
 //! HTTP CONNECT tunnel establishment.
 
 use base64::Engine;
+use std::fmt;
+use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpStream;
+use tokio::time::timeout;
 use tracing::debug;
 
 use crate::error::ProxyError;
 
+/// Default timeout for proxy connection and response reading.
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+const READ_TIMEOUT: Duration = Duration::from_secs(15);
+/// Max response header bytes to consume from proxy.
+const MAX_RESPONSE_HEADER_BYTES: usize = 8192;
+
 /// Configuration for connecting through an HTTP proxy.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct ProxyConfig {
     /// Proxy URL in the form `http://host:port` or `http://user:pass@host:port`.
     pub url: String,
     /// Optional (username, password) for proxy authentication.
     pub auth: Option<(String, String)>,
+}
+
+// Custom Debug — never print credentials
+impl fmt::Debug for ProxyConfig {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let host_port = parse_proxy_url(&self.url)
+            .map(|(h, p, _)| format!("{h}:{p}"))
+            .unwrap_or_else(|_| "<invalid>".into());
+        f.debug_struct("ProxyConfig")
+            .field("host", &host_port)
+            .field("has_auth", &self.auth.is_some())
+            .finish()
+    }
 }
 
 /// Establish an HTTP CONNECT tunnel through the proxy to `target_host:target_port`.
@@ -29,7 +51,12 @@ pub async fn establish_tunnel(
 
     debug!(%proxy_host, proxy_port, %target_host, target_port, "establishing CONNECT tunnel");
 
-    let mut stream = TcpStream::connect((proxy_host.as_str(), proxy_port)).await?;
+    let mut stream = timeout(
+        CONNECT_TIMEOUT,
+        TcpStream::connect((proxy_host.as_str(), proxy_port)),
+    )
+    .await
+    .map_err(|_| ProxyError::ConnectTimeout)??;
 
     // Build CONNECT request
     let target = format!("{target_host}:{target_port}");
@@ -45,41 +72,62 @@ pub async fn establish_tunnel(
 
     stream.write_all(req.as_bytes()).await?;
 
-    // Read response until \r\n\r\n
-    let mut reader = BufReader::new(&mut stream);
-    let mut status_line = String::new();
-    reader.read_line(&mut status_line).await?;
+    // Read response with timeout and size limit
+    let response = timeout(READ_TIMEOUT, read_proxy_response(&mut stream)).await
+        .map_err(|_| ProxyError::ReadTimeout)??;
 
-    let status_code = parse_status_code(&status_line)?;
+    let status_code = parse_status_code(&response)?;
     if status_code != 200 {
         return Err(ProxyError::TunnelRejected(status_code));
-    }
-
-    // Consume remaining headers
-    loop {
-        let mut line = String::new();
-        let n = reader.read_line(&mut line).await?;
-        if n == 0 || line == "\r\n" {
-            break;
-        }
     }
 
     debug!("CONNECT tunnel established");
     Ok(stream)
 }
 
+/// Read HTTP response line + headers from proxy, with size cap.
+async fn read_proxy_response(stream: &mut TcpStream) -> Result<String, ProxyError> {
+    let mut reader = BufReader::new(stream);
+    let mut total_bytes = 0usize;
+    let mut status_line = String::new();
+
+    let n = reader.read_line(&mut status_line).await?;
+    total_bytes += n;
+    if total_bytes > MAX_RESPONSE_HEADER_BYTES {
+        return Err(ProxyError::MalformedResponse);
+    }
+
+    // Consume remaining headers
+    loop {
+        let mut line = String::new();
+        let n = reader.read_line(&mut line).await?;
+        total_bytes += n;
+        if n == 0 || line == "\r\n" {
+            break;
+        }
+        if total_bytes > MAX_RESPONSE_HEADER_BYTES {
+            return Err(ProxyError::MalformedResponse);
+        }
+    }
+
+    Ok(status_line)
+}
+
+/// Parsed proxy URL result: (host, port, optional auth).
+type ParsedProxy = (String, u16, Option<(String, String)>);
+
 /// Parse `http://[user:pass@]host:port` into (host, port, optional auth).
-fn parse_proxy_url(url: &str) -> Result<(String, u16, Option<(String, String)>), ProxyError> {
+fn parse_proxy_url(url: &str) -> Result<ParsedProxy, ProxyError> {
     let stripped = url
         .strip_prefix("http://")
-        .ok_or_else(|| ProxyError::InvalidUrl(url.to_string()))?;
+        .ok_or_else(|| ProxyError::InvalidUrl(strip_credentials(url)))?;
 
     let (auth, host_port) = if let Some(at_pos) = stripped.find('@') {
         let auth_part = &stripped[..at_pos];
         let rest = &stripped[at_pos + 1..];
         let (user, pass) = auth_part
             .split_once(':')
-            .ok_or_else(|| ProxyError::InvalidUrl(url.to_string()))?;
+            .ok_or_else(|| ProxyError::InvalidUrl(strip_credentials(url)))?;
         (Some((user.to_string(), pass.to_string())), rest)
     } else {
         (None, stripped)
@@ -90,13 +138,24 @@ fn parse_proxy_url(url: &str) -> Result<(String, u16, Option<(String, String)>),
 
     let (host, port_str) = host_port
         .rsplit_once(':')
-        .ok_or_else(|| ProxyError::InvalidUrl(url.to_string()))?;
+        .ok_or_else(|| ProxyError::InvalidUrl(strip_credentials(url)))?;
 
     let port: u16 = port_str
         .parse()
-        .map_err(|_| ProxyError::InvalidUrl(url.to_string()))?;
+        .map_err(|_| ProxyError::InvalidUrl(strip_credentials(url)))?;
 
     Ok((host.to_string(), port, auth))
+}
+
+/// Strip credentials from URL for safe error messages.
+fn strip_credentials(url: &str) -> String {
+    if let Some(scheme_end) = url.find("://") {
+        let after_scheme = &url[scheme_end + 3..];
+        if let Some(at) = after_scheme.find('@') {
+            return format!("{}://***@{}", &url[..scheme_end], &after_scheme[at + 1..]);
+        }
+    }
+    url.to_string()
 }
 
 /// Extract status code from HTTP status line like `HTTP/1.1 200 ...`.

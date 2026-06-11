@@ -164,12 +164,25 @@ impl Frame {
                 end_stream: header.flags & FLAG_END_STREAM != 0,
                 payload,
             }),
-            TYPE_HEADERS => Ok(Frame::Headers {
-                stream_id: header.stream_id,
-                end_stream: header.flags & FLAG_END_STREAM != 0,
-                end_headers: header.flags & FLAG_END_HEADERS != 0,
-                payload,
-            }),
+            TYPE_HEADERS => {
+                let hpack_payload = if header.flags & FLAG_PRIORITY != 0 {
+                    // PRIORITY flag: first 5 bytes are stream dependency (4) + weight (1)
+                    if payload.len() < 5 {
+                        return Err(H2Error::Protocol(
+                            "HEADERS with PRIORITY flag too short".into(),
+                        ));
+                    }
+                    payload.slice(5..)
+                } else {
+                    payload
+                };
+                Ok(Frame::Headers {
+                    stream_id: header.stream_id,
+                    end_stream: header.flags & FLAG_END_STREAM != 0,
+                    end_headers: header.flags & FLAG_END_HEADERS != 0,
+                    payload: hpack_payload,
+                })
+            }
             TYPE_PRIORITY => {
                 if payload.len() < 5 {
                     return Err(H2Error::Protocol("PRIORITY frame too short".into()));
@@ -200,6 +213,11 @@ impl Frame {
                 let ack = header.flags & FLAG_ACK != 0;
                 let mut params = Vec::new();
                 if !ack {
+                    if !payload.len().is_multiple_of(6) {
+                        return Err(H2Error::Protocol(
+                            "SETTINGS frame size not multiple of 6".into(),
+                        ));
+                    }
                     let mut i = 0;
                     while i + 6 <= payload.len() {
                         let id = u16::from_be_bytes([payload[i], payload[i + 1]]);
@@ -259,6 +277,11 @@ impl Frame {
                     payload[2],
                     payload[3],
                 ]);
+                if increment == 0 {
+                    return Err(H2Error::Protocol(
+                        "WINDOW_UPDATE increment must be non-zero".into(),
+                    ));
+                }
                 Ok(Frame::WindowUpdate {
                     stream_id: header.stream_id,
                     increment,

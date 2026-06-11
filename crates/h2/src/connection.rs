@@ -29,8 +29,10 @@ pub struct Connection<T> {
     pub send_window: i32,
     /// Connection-level recv window.
     pub recv_window: i32,
-    /// Active streams.
-    streams: Vec<Stream>,
+    /// Max frame size the peer accepts (from their SETTINGS).
+    peer_max_frame_size: u32,
+    /// If GOAWAY received, the last stream ID the server will process.
+    goaway_last_stream_id: Option<u32>,
 }
 
 impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
@@ -56,7 +58,8 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
             stream_ids: StreamIdAllocator::new(),
             send_window: conn_window,
             recv_window: conn_window,
-            streams: Vec::new(),
+            peer_max_frame_size: 16_384,
+            goaway_last_stream_id: None,
         };
 
         // Read server SETTINGS and ACK it
@@ -70,7 +73,13 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
         loop {
             let frame = read_frame(&mut self.io).await?;
             match frame {
-                Frame::Settings { ack: false, .. } => {
+                Frame::Settings { ack: false, ref params } => {
+                    // Track server's settings
+                    for &(id, val) in params {
+                        if id == 0x5 && (16_384..=16_777_215).contains(&val) {
+                            self.peer_max_frame_size = val;
+                        }
+                    }
                     let mut buf = BytesMut::with_capacity(16);
                     encode_settings_ack(&mut buf);
                     self.io.write_all(&buf).await?;
@@ -101,13 +110,25 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
                 error_code,
                 ..
             } => {
-                return Err(H2Error::GoAway {
-                    last_stream_id,
-                    error_code,
-                });
+                // Store GOAWAY — don't abort immediately; let in-flight streams finish
+                self.goaway_last_stream_id = Some(last_stream_id);
+                // If error_code != 0 (NO_ERROR), it's a real error
+                if error_code != 0 {
+                    return Err(H2Error::GoAway {
+                        last_stream_id,
+                        error_code,
+                    });
+                }
             }
             Frame::WindowUpdate { stream_id: 0, increment } => {
-                self.send_window += increment as i32;
+                // Check for flow control overflow (RFC 7540 §6.9.1)
+                let new_window = (self.send_window as i64) + (increment as i64);
+                if new_window > 0x7FFF_FFFF {
+                    return Err(H2Error::Protocol(
+                        "flow control window overflow".into(),
+                    ));
+                }
+                self.send_window = new_window as i32;
             }
             _ => { /* ignore other frames during handshake */ }
         }
@@ -126,7 +147,18 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
         encoder: &mut impl HpackEncoder,
         decoder: &mut impl HpackDecoder,
     ) -> Result<Response, H2Error> {
-        let stream_id = self.stream_ids.next_id();
+        // Check if GOAWAY received — reject new requests
+        if let Some(last_id) = self.goaway_last_stream_id {
+            let next = self.stream_ids.peek();
+            if next > last_id {
+                return Err(H2Error::GoAway {
+                    last_stream_id: last_id,
+                    error_code: 0,
+                });
+            }
+        }
+
+        let stream_id = self.stream_ids.next_id()?;
         let end_stream = body.is_none();
 
         // Encode HEADERS frame
@@ -139,14 +171,19 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
         };
         write_frame(&mut self.io, &headers_frame).await?;
 
-        // Send DATA if body present
+        // Send DATA if body present — chunk to peer_max_frame_size
         if let Some(data) = body {
-            let data_frame = Frame::Data {
-                stream_id,
-                end_stream: true,
-                payload: Bytes::copy_from_slice(data),
-            };
-            write_frame(&mut self.io, &data_frame).await?;
+            let max = self.peer_max_frame_size as usize;
+            let chunks: Vec<&[u8]> = data.chunks(max).collect();
+            let last_idx = chunks.len().saturating_sub(1);
+            for (i, chunk) in chunks.iter().enumerate() {
+                let data_frame = Frame::Data {
+                    stream_id,
+                    end_stream: i == last_idx,
+                    payload: Bytes::copy_from_slice(chunk),
+                };
+                write_frame(&mut self.io, &data_frame).await?;
+            }
         }
         self.io.flush().await?;
 
@@ -176,9 +213,23 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
                 Frame::Data {
                     stream_id: sid,
                     end_stream: es,
-                    payload,
+                    ref payload,
                 } if sid == stream_id => {
-                    resp_body.extend_from_slice(&payload);
+                    // Decrement connection + stream recv window
+                    let len = payload.len() as i32;
+                    self.recv_window -= len;
+                    stream.recv_window -= len;
+
+                    resp_body.extend_from_slice(payload);
+
+                    // Send WINDOW_UPDATE if window depleted past half
+                    if self.recv_window < (crate::chrome::INITIAL_WINDOW_SIZE as i32) / 2 {
+                        let increment = (crate::chrome::INITIAL_WINDOW_SIZE as i32) - self.recv_window;
+                        let wu = Frame::WindowUpdate { stream_id: 0, increment: increment as u32 };
+                        write_frame(&mut self.io, &wu).await?;
+                        self.recv_window += increment;
+                    }
+
                     if es {
                         stream.recv_end_stream()?;
                         break;
@@ -198,8 +249,6 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
                 }
             }
         }
-
-        self.streams.push(stream);
 
         Ok(Response {
             headers: resp_headers,
