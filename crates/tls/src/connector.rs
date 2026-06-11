@@ -9,15 +9,28 @@ use tokio::net::TcpStream;
 use tokio_boring::SslStream;
 use tracing::debug;
 
-use crate::config::TlsProfile;
+use crate::config::{CertCompression, TlsProfile};
 use crate::error::TlsError;
 
 /// Establishes TLS connections with a browser-matching fingerprint.
+///
+/// # Example
+/// ```no_run
+/// use rusthttp_tls::{TlsConnector, TlsProfile};
+/// use tokio::net::TcpStream;
+///
+/// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
+/// let connector = TlsConnector::new(TlsProfile::chrome149());
+/// let tcp = TcpStream::connect("example.com:443").await?;
+/// let tls = connector.connect("example.com", 443, tcp).await?;
+/// # Ok(())
+/// # }
+/// ```
 #[derive(Debug, Clone)]
 pub struct TlsConnector {
     profile: TlsProfile,
     /// Skip certificate verification (dangerous — testing only).
-    pub danger_accept_invalid_certs: bool,
+    danger_accept_invalid_certs: bool,
 }
 
 impl TlsConnector {
@@ -27,6 +40,21 @@ impl TlsConnector {
             profile,
             danger_accept_invalid_certs: false,
         }
+    }
+
+    /// Create a connector that skips certificate verification.
+    ///
+    /// # Warning
+    /// Only use for testing or when connecting through a CONNECT proxy
+    /// where the proxy's cert interferes with verification.
+    pub fn danger_accept_invalid_certs(mut self) -> Self {
+        self.danger_accept_invalid_certs = true;
+        self
+    }
+
+    /// Get a reference to the current profile.
+    pub fn profile(&self) -> &TlsProfile {
+        &self.profile
     }
 
     /// Build the `SslConnector` with all fingerprint settings applied.
@@ -42,18 +70,20 @@ impl TlsConnector {
         builder.set_cipher_list(&cipher_string)?;
 
         // Signature algorithms
-        builder.set_sigalgs_list(self.profile.signature_algorithms)?;
+        builder.set_sigalgs_list(&self.profile.signature_algorithms)?;
 
-        // Supported groups (curves)
+        // Supported groups (curves + PQ)
         let groups_string = self.profile.supported_groups.join(":");
         builder.set_curves_list(&groups_string)?;
 
-        // ALPN — h2 then http/1.1
-        builder.set_alpn_protos(b"\x02h2\x08http/1.1")?;
+        // ALPN — encode as length-prefixed bytes
+        let alpn_bytes = encode_alpn(&self.profile.alpn_protocols);
+        builder.set_alpn_protos(&alpn_bytes)?;
 
         // Certificate verification
         if self.danger_accept_invalid_certs {
             builder.set_verify(SslVerifyMode::NONE);
+            debug!("tls verify mode: NONE (danger_accept_invalid_certs)");
         } else {
             builder.set_verify(SslVerifyMode::PEER);
         }
@@ -63,8 +93,7 @@ impl TlsConnector {
 
         if self.profile.grease {
             // SAFETY: ctx_ptr is valid — we own the builder and it has not been
-            // consumed. SSL_CTX_set_grease_enabled is a BoringSSL extension that
-            // enables GREASE (RFC 8701) values in the ClientHello.
+            // consumed. SSL_CTX_set_grease_enabled enables GREASE (RFC 8701).
             unsafe {
                 boring_sys::SSL_CTX_set_grease_enabled(ctx_ptr, 1);
             }
@@ -72,24 +101,37 @@ impl TlsConnector {
 
         if self.profile.permute_extensions {
             // SAFETY: ctx_ptr is valid — same lifetime as builder.
-            // SSL_CTX_set_permute_extensions randomises extension order to
-            // resist fingerprinting of the extension ordering itself.
+            // SSL_CTX_set_permute_extensions randomises extension order.
             unsafe {
                 boring_sys::SSL_CTX_set_permute_extensions(ctx_ptr, 1);
             }
         }
 
-        if self.profile.cert_compression {
-            // SAFETY: ctx_ptr is valid. Registers brotli (alg_id=2) as the
-            // certificate compression algorithm per RFC 8879.
-            unsafe {
-                boring_sys::SSL_CTX_add_cert_compression_alg(
-                    ctx_ptr,
-                    2, // TLSEXT_cert_compression_brotli
-                    None,
-                    Some(brotli_decompress_cb),
-                );
+        match self.profile.cert_compression {
+            CertCompression::Brotli => {
+                // SAFETY: ctx_ptr is valid. Registers brotli (alg_id=2) for
+                // certificate compression per RFC 8879.
+                unsafe {
+                    boring_sys::SSL_CTX_add_cert_compression_alg(
+                        ctx_ptr,
+                        2, // TLSEXT_cert_compression_brotli
+                        None,
+                        Some(brotli_decompress_cb),
+                    );
+                }
             }
+            CertCompression::Zlib => {
+                // SAFETY: ctx_ptr is valid. Registers zlib (alg_id=1).
+                unsafe {
+                    boring_sys::SSL_CTX_add_cert_compression_alg(
+                        ctx_ptr,
+                        1, // TLSEXT_cert_compression_zlib
+                        None,
+                        None, // zlib decompression not implemented yet
+                    );
+                }
+            }
+            CertCompression::None => {}
         }
 
         Ok(builder.build())
@@ -97,7 +139,7 @@ impl TlsConnector {
 
     /// Perform a TLS handshake over an established TCP stream.
     ///
-    /// `host` must be the target hostname (not the proxy) — this is used for
+    /// `host` must be the **target** hostname (not the proxy) — this is used for
     /// both SNI and certificate verification.
     pub async fn connect(
         &self,
@@ -127,6 +169,16 @@ impl TlsConnector {
     }
 }
 
+/// Encode ALPN protocols as length-prefixed byte sequence for BoringSSL.
+fn encode_alpn(protocols: &[String]) -> Vec<u8> {
+    let mut buf = Vec::new();
+    for proto in protocols {
+        buf.push(proto.len() as u8);
+        buf.extend_from_slice(proto.as_bytes());
+    }
+    buf
+}
+
 /// Brotli decompression callback for certificate compression (RFC 8879).
 ///
 /// # Safety
@@ -139,7 +191,7 @@ unsafe extern "C" fn brotli_decompress_cb(
     _in_ptr: *const u8,
     _in_len: usize,
 ) -> ::std::os::raw::c_int {
-    // SAFETY: This callback is required by the API signature but BoringSSL
-    // handles brotli decompression internally once the algorithm is registered.
+    // TODO: implement actual brotli decompression when needed
+    // For now, BoringSSL handles it internally once registered.
     1
 }
