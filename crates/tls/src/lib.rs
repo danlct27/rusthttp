@@ -11,7 +11,9 @@
 pub mod config;
 pub mod connector;
 pub mod error;
+pub mod profile;
 
 pub use config::TlsProfile;
 pub use connector::TlsConnector;
 pub use error::TlsError;
+pub use profile::{Profile, ProfileJson, random_grease_value};

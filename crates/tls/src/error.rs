@@ -7,6 +7,10 @@ pub enum TlsError {
     #[error("tls config error: {0}")]
     Config(#[from] boring::error::ErrorStack),
 
+    /// Configuration error with message.
+    #[error("tls config error: {0}")]
+    ConfigMsg(String),
+
     /// TLS handshake failed.
     #[error("tls handshake failed for {host}: {detail}")]
     Handshake { host: String, detail: String },
