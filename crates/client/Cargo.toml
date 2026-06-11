@@ -1,0 +1,17 @@
+[package]
+name = "rusthttptool"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Lightweight Rust HTTP client with Chrome TLS/HTTP2 fingerprint parity — bypasses Cloudflare, Akamai, DataDome"
+
+[dependencies]
+rusthttptool-tls = { path = "../tls" }
+rusthttptool-h2 = { path = "../h2" }
+rusthttptool-proxy = { path = "../proxy" }
+tokio = { workspace = true }
+bytes = { workspace = true }
+tracing = { workspace = true }
+thiserror = { workspace = true }
+http = "1"
+url = "2"

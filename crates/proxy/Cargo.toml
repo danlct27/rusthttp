@@ -1,0 +1,14 @@
+[package]
+name = "rusthttptool-proxy"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "HTTP CONNECT proxy tunnel with auth and rotation"
+
+[dependencies]
+rusthttptool-tls = { path = "../tls" }
+tokio = { workspace = true }
+bytes = { workspace = true }
+tracing = { workspace = true }
+thiserror = { workspace = true }
+base64 = "0.22"

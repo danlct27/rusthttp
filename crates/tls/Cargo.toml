@@ -1,0 +1,14 @@
+[package]
+name = "rusthttptool-tls"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "BoringSSL TLS layer with Chrome ClientHello fingerprint"
+
+[dependencies]
+boring = "4"
+boring-sys = "4"
+tokio-boring = "4"
+tokio = { workspace = true }
+tracing = { workspace = true }
+thiserror = { workspace = true }

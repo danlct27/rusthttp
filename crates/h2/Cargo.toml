@@ -1,0 +1,12 @@
+[package]
+name = "rusthttptool-h2"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Custom HTTP/2 client with Chrome SETTINGS/HPACK parity"
+
+[dependencies]
+bytes = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+thiserror = { workspace = true }

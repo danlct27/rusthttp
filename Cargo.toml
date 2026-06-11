@@ -1,0 +1,17 @@
+[workspace]
+members = ["crates/tls", "crates/h2", "crates/proxy", "crates/client"]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+authors = ["Dan Li"]
+repository = "https://github.com/danlct27/rusthttptool"
+description = "Lightweight Rust HTTP client with Chrome TLS/HTTP2 fingerprint parity"
+
+[workspace.dependencies]
+tokio = { version = "1", features = ["full"] }
+bytes = "1"
+tracing = "0.1"
+thiserror = "2"
