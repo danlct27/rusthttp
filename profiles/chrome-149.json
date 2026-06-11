@@ -1,10 +1,10 @@
 {
   "_meta": {
     "browser": "Chrome",
-    "version": "136.0.7103.113",
-    "captured": "2026-06-10",
-    "os": "macOS 15.5",
-    "notes": "Default profile for rusthttp"
+    "version": "149.0.7827.59",
+    "captured": "2026-06-11",
+    "os": "macOS 15.5 (Tahoe)",
+    "notes": "Default profile for rusthttp - latest stable June 2026"
   },
   "tls": {
     "min_version": "TLS1_2",
@@ -118,8 +118,8 @@
     ]
   },
   "http_headers": {
-    "user_agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36",
-    "sec_ch_ua": "\"Chromium\";v=\"136\", \"Google Chrome\";v=\"136\", \"Not.A/Brand\";v=\"99\"",
+    "user_agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36",
+    "sec_ch_ua": "\"Chromium\";v=\"149\", \"Google Chrome\";v=\"149\", \"Not.A/Brand\";v=\"99\"",
     "sec_ch_ua_mobile": "?0",
     "sec_ch_ua_platform": "\"macOS\"",
     "accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",

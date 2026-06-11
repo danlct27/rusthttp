@@ -1,9 +1,9 @@
 {
   "_meta": {
     "browser": "Safari",
-    "version": "18.0",
-    "captured": "2026-06-10",
-    "os": "macOS 15.5"
+    "version": "26.5",
+    "captured": "2026-06-11",
+    "os": "macOS 15.5 (Tahoe)"
   },
   "tls": {
     "min_version": "TLS1_2",
@@ -100,7 +100,7 @@
     ]
   },
   "http_headers": {
-    "user_agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Safari/605.1.15",
+    "user_agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.5 Safari/605.1.15",
     "accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
     "accept_language": "en-US,en;q=0.9",
     "accept_encoding": "gzip, deflate, br"
