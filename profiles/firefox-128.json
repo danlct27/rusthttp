@@ -1,0 +1,108 @@
+{
+  "_meta": {
+    "browser": "Firefox",
+    "version": "128.0",
+    "captured": "2026-06-10",
+    "os": "macOS 15.5"
+  },
+  "tls": {
+    "min_version": "TLS1_2",
+    "max_version": "TLS1_3",
+    "cipher_suites": [
+      "TLS_AES_128_GCM_SHA256",
+      "TLS_CHACHA20_POLY1305_SHA256",
+      "TLS_AES_256_GCM_SHA384",
+      "TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256",
+      "TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256",
+      "TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256",
+      "TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256",
+      "TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384",
+      "TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384",
+      "TLS_ECDHE_ECDSA_WITH_AES_256_CBC_SHA",
+      "TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA",
+      "TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA",
+      "TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA",
+      "TLS_RSA_WITH_AES_128_GCM_SHA256",
+      "TLS_RSA_WITH_AES_256_GCM_SHA384",
+      "TLS_RSA_WITH_AES_128_CBC_SHA",
+      "TLS_RSA_WITH_AES_256_CBC_SHA"
+    ],
+    "extensions_order": [
+      "server_name",
+      "extended_master_secret",
+      "renegotiation_info",
+      "supported_groups",
+      "ec_point_formats",
+      "session_ticket",
+      "application_layer_protocol_negotiation",
+      "status_request",
+      "delegated_credentials",
+      "key_share",
+      "supported_versions",
+      "signature_algorithms",
+      "psk_key_exchange_modes",
+      "record_size_limit",
+      "padding"
+    ],
+    "supported_groups": [
+      "x25519",
+      "secp256r1",
+      "secp384r1",
+      "secp521r1",
+      "ffdhe2048",
+      "ffdhe3072"
+    ],
+    "signature_algorithms": [
+      "ecdsa_secp256r1_sha256",
+      "ecdsa_secp384r1_sha384",
+      "ecdsa_secp521r1_sha512",
+      "rsa_pss_rsae_sha256",
+      "rsa_pss_rsae_sha384",
+      "rsa_pss_rsae_sha512",
+      "rsa_pkcs1_sha256",
+      "rsa_pkcs1_sha384",
+      "rsa_pkcs1_sha512",
+      "ecdsa_sha1",
+      "rsa_pkcs1_sha1"
+    ],
+    "record_size_limit": 16385,
+    "grease": {
+      "enabled": false
+    },
+    "alps": {
+      "enabled": false
+    }
+  },
+  "h2": {
+    "settings": [
+      {"id": 1, "name": "HEADER_TABLE_SIZE", "value": 65536},
+      {"id": 2, "name": "ENABLE_PUSH", "value": 0},
+      {"id": 3, "name": "MAX_CONCURRENT_STREAMS", "value": 100},
+      {"id": 4, "name": "INITIAL_WINDOW_SIZE", "value": 131072},
+      {"id": 5, "name": "MAX_FRAME_SIZE", "value": 16384}
+    ],
+    "window_update": 12517377,
+    "priority": {
+      "enabled": false
+    },
+    "pseudo_header_order": [":method", ":path", ":authority", ":scheme"],
+    "header_order": [
+      ":method",
+      ":path",
+      ":authority",
+      ":scheme",
+      "user-agent",
+      "accept",
+      "accept-language",
+      "accept-encoding",
+      "connection",
+      "upgrade-insecure-requests"
+    ]
+  },
+  "http_headers": {
+    "user_agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:128.0) Gecko/20100101 Firefox/128.0",
+    "accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+    "accept_language": "en-US,en;q=0.5",
+    "accept_encoding": "gzip, deflate, br"
+  }
+}

@@ -1,0 +1,108 @@
+{
+  "_meta": {
+    "browser": "Safari",
+    "version": "18.0",
+    "captured": "2026-06-10",
+    "os": "macOS 15.5"
+  },
+  "tls": {
+    "min_version": "TLS1_2",
+    "max_version": "TLS1_3",
+    "cipher_suites": [
+      "TLS_AES_128_GCM_SHA256",
+      "TLS_AES_256_GCM_SHA384",
+      "TLS_CHACHA20_POLY1305_SHA256",
+      "TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384",
+      "TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256",
+      "TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256",
+      "TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384",
+      "TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256",
+      "TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256",
+      "TLS_ECDHE_ECDSA_WITH_AES_256_CBC_SHA",
+      "TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA",
+      "TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA",
+      "TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA",
+      "TLS_RSA_WITH_AES_256_GCM_SHA384",
+      "TLS_RSA_WITH_AES_128_GCM_SHA256",
+      "TLS_RSA_WITH_AES_256_CBC_SHA",
+      "TLS_RSA_WITH_AES_128_CBC_SHA"
+    ],
+    "extensions_order": [
+      "grease",
+      "server_name",
+      "extended_master_secret",
+      "renegotiation_info",
+      "supported_groups",
+      "ec_point_formats",
+      "application_layer_protocol_negotiation",
+      "status_request",
+      "key_share",
+      "supported_versions",
+      "signature_algorithms",
+      "psk_key_exchange_modes",
+      "grease",
+      "padding"
+    ],
+    "supported_groups": [
+      "grease",
+      "x25519",
+      "secp256r1",
+      "secp384r1",
+      "secp521r1"
+    ],
+    "signature_algorithms": [
+      "ecdsa_secp256r1_sha256",
+      "rsa_pss_rsae_sha256",
+      "rsa_pkcs1_sha256",
+      "ecdsa_secp384r1_sha384",
+      "ecdsa_secp521r1_sha512",
+      "rsa_pss_rsae_sha384",
+      "rsa_pss_rsae_sha512",
+      "rsa_pkcs1_sha384",
+      "rsa_pkcs1_sha512"
+    ],
+    "grease": {
+      "enabled": true,
+      "cipher_position": 0,
+      "extension_positions": [0, 12]
+    },
+    "alps": {
+      "enabled": false
+    }
+  },
+  "h2": {
+    "settings": [
+      {"id": 1, "name": "HEADER_TABLE_SIZE", "value": 4096},
+      {"id": 2, "name": "ENABLE_PUSH", "value": 0},
+      {"id": 3, "name": "MAX_CONCURRENT_STREAMS", "value": 100},
+      {"id": 4, "name": "INITIAL_WINDOW_SIZE", "value": 4194304}
+    ],
+    "window_update": 10420225,
+    "priority": {
+      "enabled": true,
+      "weight": 255,
+      "exclusive": false,
+      "stream_dep": 0
+    },
+    "pseudo_header_order": [":method", ":scheme", ":path", ":authority"],
+    "header_order": [
+      ":method",
+      ":scheme",
+      ":path",
+      ":authority",
+      "accept",
+      "sec-fetch-site",
+      "sec-fetch-dest",
+      "accept-language",
+      "sec-fetch-mode",
+      "user-agent",
+      "accept-encoding"
+    ]
+  },
+  "http_headers": {
+    "user_agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Safari/605.1.15",
+    "accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "accept_language": "en-US,en;q=0.9",
+    "accept_encoding": "gzip, deflate, br"
+  }
+}
