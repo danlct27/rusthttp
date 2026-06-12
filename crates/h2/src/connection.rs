@@ -54,13 +54,15 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
         io.write_all(&buf).await?;
         io.flush().await?;
 
-        let initial_window = crate::chrome::INITIAL_WINDOW_SIZE as i32;
-        let conn_window = initial_window + crate::chrome::CONNECTION_WINDOW_INCREMENT as i32;
+        // Connection-level window: RFC default 65535 + our WINDOW_UPDATE increment
+        // (SETTINGS_INITIAL_WINDOW_SIZE only applies to streams, not connection)
+        let conn_window = 65535 + crate::chrome::CONNECTION_WINDOW_INCREMENT as i32;
 
         let mut conn = Connection {
             io,
             stream_ids: StreamIdAllocator::new(),
-            send_window: conn_window,
+            // Our send_window starts at RFC default (server may update via their WINDOW_UPDATE)
+            send_window: 65535,
             recv_window: conn_window,
             peer_max_frame_size: 16_384,
             goaway_last_stream_id: None,
@@ -231,7 +233,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
 
                     // Send connection-level WINDOW_UPDATE when unacked bytes exceed half
                     // (matches Chrome's IncreaseRecvWindowSize behavior)
-                    let conn_max = (crate::chrome::INITIAL_WINDOW_SIZE + crate::chrome::CONNECTION_WINDOW_INCREMENT) as i32;
+                    let conn_max = 65535_i32 + crate::chrome::CONNECTION_WINDOW_INCREMENT as i32;
                     let unacked = conn_max - self.recv_window;
                     if unacked > conn_max / 2 {
                         let wu = Frame::WindowUpdate { stream_id: 0, increment: unacked as u32 };

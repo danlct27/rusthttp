@@ -110,11 +110,19 @@ impl TlsConnector {
                 ))
             })?;
 
-        // Supported groups (curves + PQ)
+        // Supported groups (curves + PQ) — fallback without PQ if BoringSSL doesn't support it
         let groups_string = self.profile.supported_groups.join(":");
-        builder.set_curves_list(&groups_string).map_err(|e| {
-            TlsError::InvalidCurve(format!("failed to set curves '{}': {}", groups_string, e))
-        })?;
+        if builder.set_curves_list(&groups_string).is_err() {
+            // Filter out PQ groups and retry with classical curves only
+            let classical: Vec<&str> = self.profile.supported_groups.iter()
+                .map(|s| s.as_str())
+                .filter(|s| !s.contains("MLKEM") && !s.contains("Kyber"))
+                .collect();
+            let fallback = classical.join(":");
+            builder.set_curves_list(&fallback).map_err(|e| {
+                TlsError::InvalidCurve(format!("failed to set curves '{}': {}", fallback, e))
+            })?;
+        }
 
         // ALPN — encode as length-prefixed bytes
         let alpn_bytes = encode_alpn(&self.profile.alpn_protocols);
