@@ -18,7 +18,6 @@
 //! ```
 
 use bytes::Bytes;
-use std::cell::RefCell;
 use thiserror::Error;
 use tokio::net::TcpStream;
 use url::Url;
@@ -87,8 +86,7 @@ impl Response {
 pub struct Client {
     tls: TlsConnector,
     proxy: Option<ProxyConfig>,
-    encoder: RefCell<ChromeEncoder>,
-    decoder: RefCell<StandardDecoder>,
+    hpack_table_size: usize,
 }
 
 impl Client {
@@ -178,8 +176,7 @@ impl ClientBuilder {
         Ok(Client {
             tls: connector,
             proxy,
-            encoder: RefCell::new(ChromeEncoder::new(table_size)),
-            decoder: RefCell::new(StandardDecoder::new(table_size)),
+            hpack_table_size: table_size,
         })
     }
 }
@@ -263,15 +260,15 @@ impl<'a> RequestBuilder<'a> {
             h2_headers.push((k.clone(), v.clone()));
         }
 
-        // Step 5: Send request via H2
-        let mut encoder = self.client.encoder.borrow_mut();
-        let mut decoder = self.client.decoder.borrow_mut();
+        // Step 5: Send request via H2 — fresh encoder/decoder per connection
+        let mut encoder = ChromeEncoder::new(self.client.hpack_table_size);
+        let mut decoder = StandardDecoder::new(self.client.hpack_table_size);
 
         let h2_resp = conn.send_request(
             &h2_headers,
             self.body.as_deref(),
-            &mut *encoder,
-            &mut *decoder,
+            &mut encoder,
+            &mut decoder,
         ).await?;
 
         // Step 6: Parse status from response headers

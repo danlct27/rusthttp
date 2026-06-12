@@ -35,6 +35,8 @@ pub struct Connection<T> {
     peer_max_frame_size: u32,
     /// If GOAWAY received, the last stream ID the server will process.
     goaway_last_stream_id: Option<u32>,
+    /// Max response body size (default 100MB).
+    max_response_body_size: usize,
     /// Read timeout for response frames (guards against GOAWAY-then-silence).
     response_timeout: Duration,
 }
@@ -66,6 +68,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
             recv_window: conn_window,
             peer_max_frame_size: 16_384,
             goaway_last_stream_id: None,
+            max_response_body_size: 100 * 1024 * 1024, // 100MB
             response_timeout: Duration::from_secs(30),
         };
 
@@ -230,6 +233,11 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
                     stream.recv_window -= len;
 
                     resp_body.extend_from_slice(payload);
+
+                    // Guard against unbounded response body
+                    if resp_body.len() > self.max_response_body_size {
+                        return Err(H2Error::Protocol("response body exceeds max size".into()));
+                    }
 
                     // Send connection-level WINDOW_UPDATE when unacked bytes exceed half
                     // (matches Chrome's IncreaseRecvWindowSize behavior)

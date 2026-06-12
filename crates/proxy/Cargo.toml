@@ -6,7 +6,6 @@ license.workspace = true
 description = "HTTP CONNECT proxy tunnel with auth and rotation"
 
 [dependencies]
-rusthttp-tls = { path = "../tls" }
 tokio = { workspace = true }
 bytes = { workspace = true }
 tracing = { workspace = true }

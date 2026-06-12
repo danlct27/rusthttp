@@ -125,7 +125,7 @@ impl TlsConnector {
         }
 
         // ALPN — encode as length-prefixed bytes
-        let alpn_bytes = encode_alpn(&self.profile.alpn_protocols);
+        let alpn_bytes = encode_alpn(&self.profile.alpn_protocols)?;
         builder.set_alpn_protos(&alpn_bytes).map_err(|e| {
             TlsError::ConfigMsg(format!("failed to set ALPN protocols: {}", e))
         })?;
@@ -203,12 +203,16 @@ impl TlsConnector {
 /// Example: `["h2", "http/1.1"]` → `b"\x02h2\x08http/1.1"`.
 ///
 /// This is the wire format expected by `SslConnectorBuilder::set_alpn_protos`.
-fn encode_alpn(protocols: &[String]) -> Vec<u8> {
+fn encode_alpn(protocols: &[String]) -> Result<Vec<u8>, TlsError> {
     let mut buf = Vec::new();
     for proto in protocols {
-        assert!(proto.len() <= 255, "ALPN protocol name too long: {proto}");
+        if proto.len() > 255 {
+            return Err(TlsError::ConfigMsg(format!(
+                "ALPN protocol name too long ({} bytes): {}", proto.len(), proto
+            )));
+        }
         buf.push(proto.len() as u8);
         buf.extend_from_slice(proto.as_bytes());
     }
-    buf
+    Ok(buf)
 }

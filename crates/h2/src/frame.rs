@@ -213,7 +213,7 @@ impl Frame {
                 let ack = header.flags & FLAG_ACK != 0;
                 let mut params = Vec::new();
                 if !ack {
-                    if !payload.len().is_multiple_of(6) {
+                    if payload.len() % 6 != 0 {
                         return Err(H2Error::Protocol(
                             "SETTINGS frame size not multiple of 6".into(),
                         ));
