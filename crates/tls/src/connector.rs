@@ -135,6 +135,11 @@ impl TlsConnector {
                 .filter(|s| !s.contains("MLKEM") && !s.contains("Kyber"))
                 .collect();
             let fallback = classical.join(":");
+            debug!(
+                original = %groups_string,
+                fallback = %fallback,
+                "PQ groups not supported, falling back to classical curves"
+            );
             builder.set_curves_list(&fallback).map_err(|e| {
                 TlsError::InvalidCurve(format!("failed to set curves '{}': {}", fallback, e))
             })?;

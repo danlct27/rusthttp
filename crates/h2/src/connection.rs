@@ -5,7 +5,7 @@ use std::time::Duration;
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
 use tokio::time::timeout;
 
-use crate::codec::{read_frame, read_frame_with_max, write_frame};
+use crate::codec::{read_frame_with_max, write_frame};
 use crate::frame::{
     encode_chrome_settings, encode_chrome_window_update, encode_ping_ack, encode_settings_ack,
     Frame, CONNECTION_PREFACE,
@@ -80,8 +80,10 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
 
     /// Read frames until we get the server's SETTINGS, then send ACK.
     async fn read_and_ack_settings(&mut self) -> Result<(), H2Error> {
+        // SETTINGS/GOAWAY frames should never exceed 64KB — cap to prevent DoS
+        const HANDSHAKE_FRAME_CAP: u32 = 65536;
         loop {
-            let frame = read_frame(&mut self.io).await?;
+            let frame = read_frame_with_max(&mut self.io, HANDSHAKE_FRAME_CAP).await?;
             match frame {
                 Frame::Settings { ack: false, ref params } => {
                     // Track server's settings
