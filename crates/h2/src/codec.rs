@@ -9,8 +9,9 @@ use crate::H2Error;
 /// Default max frame size per RFC 7540 §4.2 (can be raised via SETTINGS).
 const DEFAULT_MAX_FRAME_SIZE: u32 = 16_384;
 
-/// Absolute max frame size allowed by RFC 7540 §4.2.
-const MAX_ALLOWED_FRAME_SIZE: u32 = 16_777_215;
+/// Sane cap for control frames (SETTINGS, GOAWAY) — no legitimate
+/// reason for these to exceed 64KB.
+const MAX_CONTROL_FRAME_SIZE: u32 = 65_536;
 
 /// Read a single HTTP/2 frame from an async reader.
 pub async fn read_frame<R: AsyncRead + Unpin>(reader: &mut R) -> Result<Frame, H2Error> {
@@ -26,9 +27,9 @@ pub async fn read_frame_with_max<R: AsyncRead + Unpin>(
     reader.read_exact(&mut header_buf).await?;
     let header = FrameHeader::decode(&header_buf);
 
-    // SETTINGS and GOAWAY may legitimately be larger, but cap at protocol max
+    // SETTINGS and GOAWAY are control frames — cap at 64KB (no legitimate need for more)
     let limit = if header.frame_type == 0x4 || header.frame_type == 0x7 {
-        MAX_ALLOWED_FRAME_SIZE
+        MAX_CONTROL_FRAME_SIZE
     } else {
         max_frame_size
     };

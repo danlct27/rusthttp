@@ -82,12 +82,16 @@ impl ProxyPool {
             }
         }
 
-        // All blacklisted — reset and return first
+        // All blacklisted — propagate error, don't silently retry
+        Err(ProxyError::PoolExhausted)
+    }
+
+    /// Reset all blacklisted proxies (caller decides when to retry).
+    pub fn reset_all(&mut self) {
         for state in &mut self.states {
             state.blacklisted = false;
             state.failures = 0;
         }
-        Ok(&self.proxies[0])
     }
 
     /// Report a failure for the proxy at the given URL.

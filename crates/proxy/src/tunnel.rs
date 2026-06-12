@@ -3,7 +3,7 @@
 use base64::Engine;
 use std::fmt;
 use std::time::Duration;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::AsyncWriteExt;
 use tokio::net::TcpStream;
 use tokio::time::timeout;
 use tracing::debug;
@@ -85,31 +85,34 @@ pub async fn establish_tunnel(
     Ok(stream)
 }
 
-/// Read HTTP response line + headers from proxy, with size cap.
+/// Read HTTP response line + headers from proxy, byte-by-byte to avoid
+/// buffering past the header boundary into TLS handshake data.
 async fn read_proxy_response(stream: &mut TcpStream) -> Result<String, ProxyError> {
-    let mut reader = BufReader::new(stream);
-    let mut total_bytes = 0usize;
-    let mut status_line = String::new();
+    use tokio::io::AsyncReadExt;
+    let mut buf = Vec::with_capacity(256);
+    let mut total = 0usize;
 
-    let n = reader.read_line(&mut status_line).await?;
-    total_bytes += n;
-    if total_bytes > MAX_RESPONSE_HEADER_BYTES {
-        return Err(ProxyError::MalformedResponse);
-    }
-
-    // Consume remaining headers
+    // Read until we see \r\n\r\n (end of HTTP headers)
     loop {
-        let mut line = String::new();
-        let n = reader.read_line(&mut line).await?;
-        total_bytes += n;
-        if n == 0 || line == "\r\n" {
-            break;
-        }
-        if total_bytes > MAX_RESPONSE_HEADER_BYTES {
+        let mut byte = [0u8; 1];
+        let n = stream.read(&mut byte).await?;
+        if n == 0 {
             return Err(ProxyError::MalformedResponse);
         }
+        buf.push(byte[0]);
+        total += 1;
+        if total > MAX_RESPONSE_HEADER_BYTES {
+            return Err(ProxyError::MalformedResponse);
+        }
+        // Check for \r\n\r\n at the end
+        if buf.len() >= 4 && &buf[buf.len() - 4..] == b"\r\n\r\n" {
+            break;
+        }
     }
 
+    // Extract status line (first line up to \r\n)
+    let header_str = String::from_utf8_lossy(&buf);
+    let status_line = header_str.lines().next().unwrap_or("").to_string();
     Ok(status_line)
 }
 

@@ -1,7 +1,9 @@
 //! HTTP/2 connection lifecycle — preface, settings exchange, request sending.
 
 use bytes::{Bytes, BytesMut};
+use std::time::Duration;
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
+use tokio::time::timeout;
 
 use crate::codec::{read_frame, write_frame};
 use crate::frame::{
@@ -33,6 +35,8 @@ pub struct Connection<T> {
     peer_max_frame_size: u32,
     /// If GOAWAY received, the last stream ID the server will process.
     goaway_last_stream_id: Option<u32>,
+    /// Read timeout for response frames (guards against GOAWAY-then-silence).
+    response_timeout: Duration,
 }
 
 impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
@@ -60,6 +64,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
             recv_window: conn_window,
             peer_max_frame_size: 16_384,
             goaway_last_stream_id: None,
+            response_timeout: Duration::from_secs(30),
         };
 
         // Read server SETTINGS and ACK it
@@ -191,12 +196,14 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
         let mut stream = Stream::new(stream_id, crate::chrome::INITIAL_WINDOW_SIZE);
         stream.send_end_stream()?;
 
-        // Read response
+        // Read response (with timeout guard against GOAWAY-then-silence)
         let mut resp_headers = Vec::new();
         let mut resp_body = BytesMut::new();
 
         loop {
-            let frame = read_frame(&mut self.io).await?;
+            let frame = timeout(self.response_timeout, read_frame(&mut self.io))
+                .await
+                .map_err(|_| H2Error::Protocol("response read timeout".into()))??;
             match frame {
                 Frame::Headers {
                     stream_id: sid,
@@ -222,12 +229,23 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
 
                     resp_body.extend_from_slice(payload);
 
-                    // Send WINDOW_UPDATE if window depleted past half
-                    if self.recv_window < (crate::chrome::INITIAL_WINDOW_SIZE as i32) / 2 {
-                        let increment = (crate::chrome::INITIAL_WINDOW_SIZE as i32) - self.recv_window;
-                        let wu = Frame::WindowUpdate { stream_id: 0, increment: increment as u32 };
+                    // Send connection-level WINDOW_UPDATE when unacked bytes exceed half
+                    // (matches Chrome's IncreaseRecvWindowSize behavior)
+                    let conn_max = (crate::chrome::INITIAL_WINDOW_SIZE + crate::chrome::CONNECTION_WINDOW_INCREMENT) as i32;
+                    let unacked = conn_max - self.recv_window;
+                    if unacked > conn_max / 2 {
+                        let wu = Frame::WindowUpdate { stream_id: 0, increment: unacked as u32 };
                         write_frame(&mut self.io, &wu).await?;
-                        self.recv_window += increment;
+                        self.recv_window += unacked;
+                    }
+
+                    // Send stream-level WINDOW_UPDATE when stream window depleted past half
+                    let stream_initial = crate::chrome::INITIAL_WINDOW_SIZE as i32;
+                    let stream_unacked = stream_initial - stream.recv_window;
+                    if stream_unacked > stream_initial / 2 {
+                        let swu = Frame::WindowUpdate { stream_id, increment: stream_unacked as u32 };
+                        write_frame(&mut self.io, &swu).await?;
+                        stream.recv_window += stream_unacked;
                     }
 
                     if es {
