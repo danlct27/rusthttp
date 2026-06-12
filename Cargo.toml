@@ -2,6 +2,21 @@
 members = ["crates/tls", "crates/h2", "crates/proxy", "crates/client"]
 resolver = "2"
 
+[package]
+name = "rusthttp-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Chrome-fingerprint HTTP client CLI"
+
+[[bin]]
+name = "rusthttp"
+path = "src/main.rs"
+
+[dependencies]
+rusthttp = { path = "crates/client" }
+tokio = { workspace = true }
+
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
