@@ -17,40 +17,277 @@
 //! }
 //! ```
 
+use bytes::Bytes;
+use std::cell::RefCell;
+use thiserror::Error;
+use tokio::net::TcpStream;
+use url::Url;
+
 pub use rusthttp_h2 as h2;
 pub use rusthttp_proxy as proxy;
 pub use rusthttp_tls as tls;
 
-pub struct Client;
-pub struct ClientBuilder;
-pub struct Response;
+use h2::connection::Connection;
+use h2::hpack::{ChromeEncoder, StandardDecoder};
+use proxy::{establish_tunnel, ProxyConfig};
+use tls::{TlsConnector, TlsProfile};
 
-impl Client {
-    pub fn builder() -> ClientBuilder {
-        ClientBuilder
-    }
-
-    pub fn get(&self, _url: &str) -> RequestBuilder {
-        RequestBuilder
-    }
+/// Errors from the client layer.
+#[derive(Debug, Error)]
+pub enum ClientError {
+    #[error("tls: {0}")]
+    Tls(#[from] tls::TlsError),
+    #[error("h2: {0}")]
+    H2(#[from] h2::H2Error),
+    #[error("proxy: {0}")]
+    Proxy(#[from] proxy::ProxyError),
+    #[error("invalid url: {0}")]
+    InvalidUrl(String),
+    #[error("io: {0}")]
+    Io(#[from] std::io::Error),
 }
 
-impl ClientBuilder {
-    pub fn chrome(self) -> Self { self }
-    pub fn proxy(self, _url: &str) -> Self { self }
-    pub fn build(self) -> Result<Client, Box<dyn std::error::Error>> {
-        Ok(Client)
-    }
-}
-
-pub struct RequestBuilder;
-
-impl RequestBuilder {
-    pub async fn send(self) -> Result<Response, Box<dyn std::error::Error>> {
-        todo!("implement")
-    }
+/// HTTP response.
+pub struct Response {
+    /// HTTP status code.
+    pub status_code: u16,
+    /// Response headers.
+    pub headers: Vec<(String, String)>,
+    /// Response body bytes.
+    pub body: Bytes,
 }
 
 impl Response {
-    pub fn status(&self) -> u16 { 200 }
+    /// Get the HTTP status code.
+    pub fn status(&self) -> u16 {
+        self.status_code
+    }
+
+    /// Get the response body as bytes.
+    pub fn bytes(&self) -> &Bytes {
+        &self.body
+    }
+
+    /// Get the response body as UTF-8 text.
+    pub fn text(&self) -> Result<&str, std::str::Utf8Error> {
+        std::str::from_utf8(&self.body)
+    }
+
+    /// Get a header value by name (case-insensitive).
+    pub fn header(&self, name: &str) -> Option<&str> {
+        let lower = name.to_lowercase();
+        self.headers
+            .iter()
+            .find(|(k, _)| k.to_lowercase() == lower)
+            .map(|(_, v)| v.as_str())
+    }
+}
+
+/// HTTP client with Chrome fingerprint parity.
+pub struct Client {
+    tls: TlsConnector,
+    proxy: Option<ProxyConfig>,
+    encoder: RefCell<ChromeEncoder>,
+    decoder: RefCell<StandardDecoder>,
+}
+
+impl Client {
+    /// Create a new ClientBuilder.
+    pub fn builder() -> ClientBuilder {
+        ClientBuilder::default()
+    }
+
+    /// Send a GET request.
+    pub fn get(&self, url: &str) -> RequestBuilder<'_> {
+        RequestBuilder {
+            client: self,
+            method: "GET".into(),
+            url: url.into(),
+            headers: Vec::new(),
+            body: None,
+        }
+    }
+
+    /// Send a POST request.
+    pub fn post(&self, url: &str) -> RequestBuilder<'_> {
+        RequestBuilder {
+            client: self,
+            method: "POST".into(),
+            url: url.into(),
+            headers: Vec::new(),
+            body: None,
+        }
+    }
+}
+
+/// Builder for configuring a Client.
+#[derive(Default)]
+pub struct ClientBuilder {
+    profile: Option<TlsProfile>,
+    proxy_url: Option<String>,
+    proxy_auth: Option<(String, String)>,
+    danger_accept_invalid_certs: bool,
+}
+
+impl ClientBuilder {
+    /// Use Chrome 149 TLS/HTTP2 fingerprint.
+    pub fn chrome(mut self) -> Self {
+        self.profile = Some(TlsProfile::chrome149());
+        self
+    }
+
+    /// Use a custom TLS profile.
+    pub fn tls_profile(mut self, profile: TlsProfile) -> Self {
+        self.profile = Some(profile);
+        self
+    }
+
+    /// Set an HTTP CONNECT proxy.
+    pub fn proxy(mut self, url: &str) -> Self {
+        self.proxy_url = Some(url.to_string());
+        self
+    }
+
+    /// Set proxy authentication credentials.
+    pub fn proxy_auth(mut self, user: &str, pass: &str) -> Self {
+        self.proxy_auth = Some((user.to_string(), pass.to_string()));
+        self
+    }
+
+    /// Skip TLS certificate verification (dangerous).
+    pub fn danger_accept_invalid_certs(mut self) -> Self {
+        self.danger_accept_invalid_certs = true;
+        self
+    }
+
+    /// Build the Client.
+    pub fn build(self) -> Result<Client, ClientError> {
+        let profile = self.profile.unwrap_or_else(TlsProfile::chrome149);
+        let table_size = h2::chrome::HEADER_TABLE_SIZE as usize;
+
+        let mut connector = TlsConnector::new(profile);
+        if self.danger_accept_invalid_certs {
+            connector = connector.danger_accept_invalid_certs();
+        }
+
+        let proxy = self.proxy_url.map(|url| ProxyConfig {
+            url,
+            auth: self.proxy_auth,
+        });
+
+        Ok(Client {
+            tls: connector,
+            proxy,
+            encoder: RefCell::new(ChromeEncoder::new(table_size)),
+            decoder: RefCell::new(StandardDecoder::new(table_size)),
+        })
+    }
+}
+
+/// A request being built.
+pub struct RequestBuilder<'a> {
+    client: &'a Client,
+    method: String,
+    url: String,
+    headers: Vec<(String, String)>,
+    body: Option<Vec<u8>>,
+}
+
+impl<'a> RequestBuilder<'a> {
+    /// Add a header.
+    pub fn header(mut self, name: &str, value: &str) -> Self {
+        self.headers.push((name.to_string(), value.to_string()));
+        self
+    }
+
+    /// Set the request body.
+    pub fn body(mut self, data: Vec<u8>) -> Self {
+        self.body = Some(data);
+        self
+    }
+
+    /// Send the request and return the response.
+    pub async fn send(self) -> Result<Response, ClientError> {
+        let url = Url::parse(&self.url)
+            .map_err(|e| ClientError::InvalidUrl(format!("{}: {}", self.url, e)))?;
+
+        let host = url.host_str()
+            .ok_or_else(|| ClientError::InvalidUrl("missing host".into()))?;
+        let port = url.port_or_known_default().unwrap_or(443);
+
+        // Step 1: Establish TCP (direct or via proxy)
+        let tcp = if let Some(ref proxy_config) = self.client.proxy {
+            establish_tunnel(proxy_config, host, port).await?
+        } else {
+            TcpStream::connect((host, port)).await?
+        };
+
+        // Step 2: TLS handshake (SNI + verify = target hostname)
+        let tls_stream = self.client.tls.connect(host, port, tcp).await?;
+
+        // Step 3: H2 handshake
+        let mut conn = Connection::handshake(tls_stream).await?;
+
+        // Step 4: Build Chrome-ordered pseudo-headers + user headers
+        let path = if url.path().is_empty() { "/" } else { url.path() };
+        let authority = if port == 443 {
+            host.to_string()
+        } else {
+            format!("{}:{}", host, port)
+        };
+
+        let mut h2_headers: Vec<(String, String)> = vec![
+            (":method".into(), self.method.clone()),
+            (":authority".into(), authority),
+            (":scheme".into(), "https".into()),
+            (":path".into(), path.into()),
+        ];
+
+        // Add default headers Chrome sends
+        if !self.headers.iter().any(|(k, _)| k.to_lowercase() == "user-agent") {
+            h2_headers.push(("user-agent".into(),
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36".into()));
+        }
+        if !self.headers.iter().any(|(k, _)| k.to_lowercase() == "accept") {
+            h2_headers.push(("accept".into(), "*/*".into()));
+        }
+        if !self.headers.iter().any(|(k, _)| k.to_lowercase() == "accept-encoding") {
+            h2_headers.push(("accept-encoding".into(), "gzip, deflate, br".into()));
+        }
+        if !self.headers.iter().any(|(k, _)| k.to_lowercase() == "accept-language") {
+            h2_headers.push(("accept-language".into(), "en-US,en;q=0.9".into()));
+        }
+
+        // Append user-provided headers
+        for (k, v) in &self.headers {
+            h2_headers.push((k.clone(), v.clone()));
+        }
+
+        // Step 5: Send request via H2
+        let mut encoder = self.client.encoder.borrow_mut();
+        let mut decoder = self.client.decoder.borrow_mut();
+
+        let h2_resp = conn.send_request(
+            &h2_headers,
+            self.body.as_deref(),
+            &mut *encoder,
+            &mut *decoder,
+        ).await?;
+
+        // Step 6: Parse status from response headers
+        let status_code = h2_resp.headers.iter()
+            .find(|(k, _)| k == ":status")
+            .and_then(|(_, v)| v.parse::<u16>().ok())
+            .unwrap_or(0);
+
+        let headers: Vec<(String, String)> = h2_resp.headers.into_iter()
+            .filter(|(k, _)| !k.starts_with(':'))
+            .collect();
+
+        Ok(Response {
+            status_code,
+            headers,
+            body: h2_resp.body,
+        })
+    }
 }
