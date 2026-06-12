@@ -12,10 +12,26 @@ use tracing::debug;
 use crate::config::{CertCompression, TlsProfile};
 use crate::error::TlsError;
 
-// NOTE: Brotli certificate compression removed — the previous stub callback
-// could cause UB if BoringSSL invoked it without a real brotli implementation
-// backing the decompression. Zlib is sufficient for fingerprint parity.
-// TODO: Re-add brotli support once boring crate exposes a safe, tested API for it.
+// NOTE: Both Brotli and Zlib certificate decompressors are implemented.
+// Chrome advertises brotli (algorithm ID 2) — servers may select it.
+
+/// Brotli certificate compressor (decompress only).
+struct BrotliCertCompressor;
+
+impl CertificateCompressor for BrotliCertCompressor {
+    const ALGORITHM: CertificateCompressionAlgorithm = CertificateCompressionAlgorithm::BROTLI;
+    const CAN_COMPRESS: bool = false;
+    const CAN_DECOMPRESS: bool = true;
+
+    fn decompress<W>(&self, input: &[u8], output: &mut W) -> std::io::Result<()>
+    where
+        W: std::io::Write,
+    {
+        let mut decoder = brotli::Decompressor::new(input, 4096);
+        std::io::copy(&mut decoder, output)?;
+        Ok(())
+    }
+}
 
 /// Zlib certificate compressor using boring's safe CertificateCompressor trait.
 struct ZlibCertCompressor;
@@ -148,9 +164,12 @@ impl TlsConnector {
             builder.set_permute_extensions(true);
         }
 
-        // Certificate compression — only Zlib supported (brotli removed for safety, see top of file)
+        // Certificate compression — register appropriate decompressor
         match self.profile.cert_compression {
-            CertCompression::Brotli | CertCompression::Zlib => {
+            CertCompression::Brotli => {
+                builder.add_certificate_compression_algorithm(BrotliCertCompressor)?;
+            }
+            CertCompression::Zlib => {
                 builder.add_certificate_compression_algorithm(ZlibCertCompressor)?;
             }
             CertCompression::None => {}

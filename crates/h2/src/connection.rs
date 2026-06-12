@@ -5,7 +5,7 @@ use std::time::Duration;
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
 use tokio::time::timeout;
 
-use crate::codec::{read_frame, write_frame};
+use crate::codec::{read_frame, read_frame_with_max, write_frame};
 use crate::frame::{
     encode_chrome_settings, encode_chrome_window_update, encode_ping_ack, encode_settings_ack,
     Frame, CONNECTION_PREFACE,
@@ -206,7 +206,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
         let mut resp_body = BytesMut::new();
 
         loop {
-            let frame = timeout(self.response_timeout, read_frame(&mut self.io))
+            let frame = timeout(self.response_timeout, read_frame_with_max(&mut self.io, self.peer_max_frame_size))
                 .await
                 .map_err(|_| H2Error::Protocol("response read timeout".into()))??;
             match frame {

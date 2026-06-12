@@ -184,19 +184,32 @@ fn huff_encode(input: &[u8]) -> Vec<u8> {
 }
 
 fn huff_decode(input: &[u8]) -> Result<Vec<u8>, H2Error> {
-    // Build a simple bit-by-bit decoder
+    // Build sorted lookup table on first use (sorted by code length, then code value)
+    use std::sync::OnceLock;
+    static TABLE: OnceLock<Vec<(u32, u8, u8)>> = OnceLock::new(); // (code, len, sym)
+    let table = TABLE.get_or_init(|| {
+        let mut t: Vec<(u32, u8, u8)> = HUFF.iter().enumerate().take(256)
+            .map(|(sym, &(code, len))| (code, len, sym as u8))
+            .collect();
+        t.sort_by_key(|&(_, len, _)| len);
+        t
+    });
+
     let mut out = Vec::new();
     let mut bits: u64 = 0;
     let mut nbits: u8 = 0;
+
     for &byte in input {
         bits = (bits << 8) | byte as u64;
         nbits += 8;
-        'sym: loop {
-            if nbits < 5 { break 'sym; }
+
+        'decode: while nbits >= 5 {
             let mut found = false;
-            for (sym, &(code, len)) in HUFF.iter().enumerate().take(256) {
-                if len <= nbits && (bits >> (nbits - len)) as u32 == code {
-                    out.push(sym as u8);
+            // Scan by length group (5..=30 bits) — most symbols are 5-8 bits
+            for &(code, len, sym) in table.iter() {
+                if len > nbits { break; } // sorted by len, so no more matches possible
+                if (bits >> (nbits - len)) as u32 == code {
+                    out.push(sym);
                     if out.len() > MAX_HEADER_VALUE_LEN {
                         return Err(H2Error::Hpack("decoded header too large".into()));
                     }
@@ -206,9 +219,10 @@ fn huff_decode(input: &[u8]) -> Result<Vec<u8>, H2Error> {
                     break;
                 }
             }
-            if !found { break 'sym; }
+            if !found { break 'decode; }
         }
     }
+
     if nbits > 7 { return Err(H2Error::Hpack("invalid huffman padding".into())); }
     if nbits > 0 {
         let mask = (1u64 << nbits) - 1;
