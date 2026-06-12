@@ -93,6 +93,14 @@ pub struct Client {
     cookies: Mutex<HashMap<String, Vec<(String, String)>>>,
     /// Max redirects to follow (0 = disabled)
     max_redirects: u8,
+    /// Default HTTP headers (from profile or hardcoded Chrome defaults)
+    user_agent: String,
+    sec_ch_ua: String,
+    sec_ch_ua_mobile: String,
+    sec_ch_ua_platform: String,
+    accept: String,
+    accept_language: String,
+    accept_encoding: String,
 }
 
 impl Client {
@@ -187,6 +195,13 @@ impl ClientBuilder {
             hpack_table_size: table_size,
             cookies: Mutex::new(HashMap::new()),
             max_redirects: self.max_redirects,
+            user_agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36".into(),
+            sec_ch_ua: r#""Chromium";v="149", "Google Chrome";v="149", "Not:A-Brand";v="99""#.into(),
+            sec_ch_ua_mobile: "?0".into(),
+            sec_ch_ua_platform: r#""Windows""#.into(),
+            accept: "*/*".into(),
+            accept_language: "en-US,en;q=0.9".into(),
+            accept_encoding: "gzip, deflate, br".into(),
         })
     }
 }
@@ -215,8 +230,37 @@ impl<'a> RequestBuilder<'a> {
 
     /// Send the request and return the response.
     pub async fn send(self) -> Result<Response, ClientError> {
-        let url = Url::parse(&self.url)
-            .map_err(|e| ClientError::InvalidUrl(format!("{}: {}", self.url, e)))?;
+        let mut current_url = self.url.clone();
+        let mut redirects = 0u8;
+
+        loop {
+            let resp = self.execute_single(&current_url).await?;
+
+            // Follow redirects (301, 302, 303, 307, 308)
+            if self.client.max_redirects > 0
+                && redirects < self.client.max_redirects
+                && matches!(resp.status_code, 301 | 302 | 303 | 307 | 308)
+            {
+                if let Some(location) = resp.header("location") {
+                    // Resolve relative URLs
+                    let base = Url::parse(&current_url)
+                        .map_err(|e| ClientError::InvalidUrl(e.to_string()))?;
+                    let next = base.join(location)
+                        .map_err(|e| ClientError::InvalidUrl(e.to_string()))?;
+                    current_url = next.to_string();
+                    redirects += 1;
+                    continue;
+                }
+            }
+
+            return Ok(resp);
+        }
+    }
+
+    /// Execute a single request (no redirect following).
+    async fn execute_single(&self, url_str: &str) -> Result<Response, ClientError> {
+        let url = Url::parse(url_str)
+            .map_err(|e| ClientError::InvalidUrl(format!("{}: {}", url_str, e)))?;
 
         let host = url.host_str()
             .ok_or_else(|| ClientError::InvalidUrl("missing host".into()))?;
@@ -250,27 +294,25 @@ impl<'a> RequestBuilder<'a> {
             (":path".into(), path.into()),
         ];
 
-        // Add default headers Chrome sends
+        // Add default headers Chrome sends (from client profile)
         if !self.headers.iter().any(|(k, _)| k.to_lowercase() == "user-agent") {
-            h2_headers.push(("user-agent".into(),
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36".into()));
+            h2_headers.push(("user-agent".into(), self.client.user_agent.clone()));
         }
         if !self.headers.iter().any(|(k, _)| k.to_lowercase() == "accept") {
-            h2_headers.push(("accept".into(), "*/*".into()));
+            h2_headers.push(("accept".into(), self.client.accept.clone()));
         }
         if !self.headers.iter().any(|(k, _)| k.to_lowercase() == "accept-encoding") {
-            h2_headers.push(("accept-encoding".into(), "gzip, deflate, br".into()));
+            h2_headers.push(("accept-encoding".into(), self.client.accept_encoding.clone()));
         }
         if !self.headers.iter().any(|(k, _)| k.to_lowercase() == "accept-language") {
-            h2_headers.push(("accept-language".into(), "en-US,en;q=0.9".into()));
+            h2_headers.push(("accept-language".into(), self.client.accept_language.clone()));
         }
 
         // Chrome Client Hints (sec-ch-ua) — required by Cloudflare/DataDome
         if !self.headers.iter().any(|(k, _)| k.to_lowercase() == "sec-ch-ua") {
-            h2_headers.push(("sec-ch-ua".into(),
-                r#""Chromium";v="149", "Google Chrome";v="149", "Not:A-Brand";v="99""#.into()));
-            h2_headers.push(("sec-ch-ua-mobile".into(), "?0".into()));
-            h2_headers.push(("sec-ch-ua-platform".into(), r#""Windows""#.into()));
+            h2_headers.push(("sec-ch-ua".into(), self.client.sec_ch_ua.clone()));
+            h2_headers.push(("sec-ch-ua-mobile".into(), self.client.sec_ch_ua_mobile.clone()));
+            h2_headers.push(("sec-ch-ua-platform".into(), self.client.sec_ch_ua_platform.clone()));
         }
 
         // sec-fetch headers — Chrome always sends these
