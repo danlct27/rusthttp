@@ -18,6 +18,8 @@
 //! ```
 
 use bytes::Bytes;
+use std::collections::HashMap;
+use std::sync::Mutex;
 use thiserror::Error;
 use tokio::net::TcpStream;
 use url::Url;
@@ -87,6 +89,10 @@ pub struct Client {
     tls: TlsConnector,
     proxy: Option<ProxyConfig>,
     hpack_table_size: usize,
+    /// Simple cookie jar: domain → Vec<(name, value)>
+    cookies: Mutex<HashMap<String, Vec<(String, String)>>>,
+    /// Max redirects to follow (0 = disabled)
+    max_redirects: u8,
 }
 
 impl Client {
@@ -125,12 +131,14 @@ pub struct ClientBuilder {
     proxy_url: Option<String>,
     proxy_auth: Option<(String, String)>,
     danger_accept_invalid_certs: bool,
+    max_redirects: u8,
 }
 
 impl ClientBuilder {
     /// Use Chrome 149 TLS/HTTP2 fingerprint.
     pub fn chrome(mut self) -> Self {
         self.profile = Some(TlsProfile::chrome149());
+        self.max_redirects = 10;
         self
     }
 
@@ -177,6 +185,8 @@ impl ClientBuilder {
             tls: connector,
             proxy,
             hpack_table_size: table_size,
+            cookies: Mutex::new(HashMap::new()),
+            max_redirects: self.max_redirects,
         })
     }
 }
@@ -255,6 +265,35 @@ impl<'a> RequestBuilder<'a> {
             h2_headers.push(("accept-language".into(), "en-US,en;q=0.9".into()));
         }
 
+        // Chrome Client Hints (sec-ch-ua) — required by Cloudflare/DataDome
+        if !self.headers.iter().any(|(k, _)| k.to_lowercase() == "sec-ch-ua") {
+            h2_headers.push(("sec-ch-ua".into(),
+                r#""Chromium";v="149", "Google Chrome";v="149", "Not:A-Brand";v="99""#.into()));
+            h2_headers.push(("sec-ch-ua-mobile".into(), "?0".into()));
+            h2_headers.push(("sec-ch-ua-platform".into(), r#""Windows""#.into()));
+        }
+
+        // sec-fetch headers — Chrome always sends these
+        if !self.headers.iter().any(|(k, _)| k.to_lowercase() == "sec-fetch-site") {
+            h2_headers.push(("sec-fetch-site".into(), "none".into()));
+            h2_headers.push(("sec-fetch-mode".into(), "navigate".into()));
+            h2_headers.push(("sec-fetch-user".into(), "?1".into()));
+            h2_headers.push(("sec-fetch-dest".into(), "document".into()));
+        }
+
+        // Cookie jar — inject stored cookies for this domain
+        if let Ok(jar) = self.client.cookies.lock() {
+            if let Some(domain_cookies) = jar.get(host) {
+                if !domain_cookies.is_empty() {
+                    let cookie_str: String = domain_cookies.iter()
+                        .map(|(n, v)| format!("{}={}", n, v))
+                        .collect::<Vec<_>>()
+                        .join("; ");
+                    h2_headers.push(("cookie".into(), cookie_str));
+                }
+            }
+        }
+
         // Append user-provided headers
         for (k, v) in &self.headers {
             h2_headers.push((k.clone(), v.clone()));
@@ -280,6 +319,21 @@ impl<'a> RequestBuilder<'a> {
         let headers: Vec<(String, String)> = h2_resp.headers.into_iter()
             .filter(|(k, _)| !k.starts_with(':'))
             .collect();
+
+        // Store set-cookie headers in jar
+        for (k, v) in &headers {
+            if k.to_lowercase() == "set-cookie" {
+                if let Some(cookie_part) = v.split(';').next() {
+                    if let Some((name, value)) = cookie_part.split_once('=') {
+                        if let Ok(mut jar) = self.client.cookies.lock() {
+                            jar.entry(host.to_string())
+                                .or_default()
+                                .push((name.trim().to_string(), value.trim().to_string()));
+                        }
+                    }
+                }
+            }
+        }
 
         Ok(Response {
             status_code,
