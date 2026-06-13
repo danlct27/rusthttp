@@ -1,25 +1,12 @@
 //! rusthttp — Lightweight Rust HTTP client with Chrome TLS/HTTP2 fingerprint parity.
-//!
-//! # Example
-//! ```no_run
-//! use rusthttp::Client;
-//!
-//! #[tokio::main]
-//! async fn main() -> Result<(), Box<dyn std::error::Error>> {
-//!     let client = Client::builder()
-//!         .chrome()
-//!         .proxy("http://user:pass@host:port")
-//!         .build()?;
-//!
-//!     let resp = client.get("https://example.com").send().await?;
-//!     println!("{}", resp.status());
-//!     Ok(())
-//! }
-//! ```
+
+pub mod header;
+pub mod cookie_jar;
 
 use bytes::Bytes;
 use std::collections::HashMap;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
 use thiserror::Error;
 use tokio::net::TcpStream;
 use url::Url;
@@ -28,10 +15,21 @@ pub use rusthttp_h2 as h2;
 pub use rusthttp_proxy as proxy;
 pub use rusthttp_tls as tls;
 
+pub use header::{HeaderMap, HeaderName, HeaderValue, header_name};
+pub use cookie_jar::CookieJar;
+
 use h2::connection::Connection;
 use h2::hpack::{ChromeEncoder, StandardDecoder};
 use proxy::{establish_tunnel, ProxyConfig};
 use tls::{TlsConnector, TlsProfile};
+
+// Pool entry: H2 connection + HPACK state for a single host:port
+type TlsStream = tokio_boring::SslStream<TcpStream>;
+struct PooledConn {
+    conn: Connection<TlsStream>,
+    encoder: ChromeEncoder,
+    decoder: StandardDecoder,
+}
 
 /// Errors from the client layer.
 #[derive(Debug, Error)]
@@ -144,10 +142,18 @@ pub struct Client {
     tls: TlsConnector,
     proxy: Option<ProxyConfig>,
     hpack_table_size: usize,
-    /// Simple cookie jar: domain → Vec<(name, value)>
+    /// Legacy simple cookie jar (used when no Arc<CookieJar> provided)
     cookies: Mutex<HashMap<String, Vec<(String, String)>>>,
+    /// URL-scoped cookie jar (preferred — compatible with rquest::cookie::Jar)
+    cookie_jar: Option<Arc<CookieJar>>,
+    /// Connection pool: key = "host:port", reuses H2 connections
+    pool: tokio::sync::Mutex<HashMap<String, PooledConn>>,
     /// Max redirects to follow (0 = disabled)
     max_redirects: u8,
+    /// Request timeout
+    timeout: Option<Duration>,
+    /// Default headers applied to every request
+    default_headers: HeaderMap,
     /// Default HTTP headers (from profile or hardcoded Chrome defaults)
     user_agent: String,
     sec_ch_ua: String,
@@ -162,6 +168,11 @@ impl Client {
     /// Create a new ClientBuilder.
     pub fn builder() -> ClientBuilder {
         ClientBuilder::default()
+    }
+
+    /// Access the shared cookie jar (if configured via .cookie_provider()).
+    pub fn cookie_jar(&self) -> Option<&Arc<CookieJar>> {
+        self.cookie_jar.as_ref()
     }
 
     /// Send a GET request.
@@ -185,6 +196,28 @@ impl Client {
             body: None,
         }
     }
+
+    /// Send a PUT request.
+    pub fn put(&self, url: &str) -> RequestBuilder<'_> {
+        RequestBuilder {
+            client: self,
+            method: "PUT".into(),
+            url: url.into(),
+            headers: Vec::new(),
+            body: None,
+        }
+    }
+
+    /// Send a DELETE request.
+    pub fn delete(&self, url: &str) -> RequestBuilder<'_> {
+        RequestBuilder {
+            client: self,
+            method: "DELETE".into(),
+            url: url.into(),
+            headers: Vec::new(),
+            body: None,
+        }
+    }
 }
 
 /// Builder for configuring a Client.
@@ -195,6 +228,9 @@ pub struct ClientBuilder {
     proxy_auth: Option<(String, String)>,
     danger_accept_invalid_certs: bool,
     max_redirects: u8,
+    default_headers: Option<HeaderMap>,
+    cookie_jar: Option<Arc<CookieJar>>,
+    timeout: Option<Duration>,
 }
 
 impl ClientBuilder {
@@ -229,6 +265,34 @@ impl ClientBuilder {
         self
     }
 
+    /// Set default headers applied to every request (same as rquest's .default_headers()).
+    pub fn default_headers(mut self, headers: HeaderMap) -> Self {
+        self.default_headers = Some(headers);
+        self
+    }
+
+    /// Set a shared cookie jar (same pattern as rquest's .cookie_provider(Arc<Jar>)).
+    pub fn cookie_provider(mut self, jar: Arc<CookieJar>) -> Self {
+        self.cookie_jar = Some(jar);
+        self
+    }
+
+    /// Set request timeout.
+    pub fn timeout(mut self, duration: Duration) -> Self {
+        self.timeout = Some(duration);
+        self
+    }
+
+    /// Enable gzip decompression (already always supported, this is for API compat).
+    pub fn gzip(self, _enable: bool) -> Self {
+        self // decompression is always on via accept-encoding
+    }
+
+    /// Enable brotli decompression (already always supported, this is for API compat).
+    pub fn brotli(self, _enable: bool) -> Self {
+        self // decompression is always on via accept-encoding
+    }
+
     /// Build the Client.
     pub fn build(self) -> Result<Client, ClientError> {
         let profile = self.profile.unwrap_or_else(TlsProfile::chrome149);
@@ -249,7 +313,11 @@ impl ClientBuilder {
             proxy,
             hpack_table_size: table_size,
             cookies: Mutex::new(HashMap::new()),
+            cookie_jar: self.cookie_jar,
+            pool: tokio::sync::Mutex::new(HashMap::new()),
             max_redirects: self.max_redirects,
+            timeout: self.timeout,
+            default_headers: self.default_headers.unwrap_or_default(),
             user_agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36".into(),
             sec_ch_ua: r#""Chromium";v="149", "Google Chrome";v="149", "Not:A-Brand";v="99""#.into(),
             sec_ch_ua_mobile: "?0".into(),
@@ -271,9 +339,17 @@ pub struct RequestBuilder<'a> {
 }
 
 impl<'a> RequestBuilder<'a> {
-    /// Add a header.
+    /// Add a single header.
     pub fn header(mut self, name: &str, value: &str) -> Self {
         self.headers.push((name.to_string(), value.to_string()));
+        self
+    }
+
+    /// Add multiple headers from a HeaderMap (same as rquest's .headers(map)).
+    pub fn headers(mut self, map: HeaderMap) -> Self {
+        for (k, v) in map.iter() {
+            self.headers.push((k.as_str().to_string(), v.to_str().unwrap_or("").to_string()));
+        }
         self
     }
 
@@ -335,21 +411,12 @@ impl<'a> RequestBuilder<'a> {
         let host = url.host_str()
             .ok_or_else(|| ClientError::InvalidUrl("missing host".into()))?;
         let port = url.port_or_known_default().unwrap_or(443);
+        let pool_key = format!("{}:{}", host, port);
 
-        // Step 1: Establish TCP (direct or via proxy)
-        let tcp = if let Some(ref proxy_config) = self.client.proxy {
-            establish_tunnel(proxy_config, host, port).await?
-        } else {
-            TcpStream::connect((host, port)).await?
-        };
+        // Try to get a pooled connection
+        let mut pooled = self.client.pool.lock().await.remove(&pool_key);
 
-        // Step 2: TLS handshake (SNI + verify = target hostname)
-        let tls_stream = self.client.tls.connect(host, port, tcp).await?;
-
-        // Step 3: H2 handshake
-        let mut conn = Connection::handshake(tls_stream).await?;
-
-        // Step 4: Build Chrome-ordered pseudo-headers + user headers
+        // Step 4: Build headers (before connection — no borrow issues)
         let path = match url.query() {
             Some(q) => format!("{}?{}", if url.path().is_empty() { "/" } else { url.path() }, q),
             None => (if url.path().is_empty() { "/" } else { url.path() }).to_string(),
@@ -397,7 +464,13 @@ impl<'a> RequestBuilder<'a> {
         }
 
         // Cookie jar — inject stored cookies for this domain
-        if let Ok(jar) = self.client.cookies.lock() {
+        if let Some(ref jar) = self.client.cookie_jar {
+            // Use the new URL-scoped cookie jar
+            if let Some(cookie_val) = jar.cookies(&url) {
+                h2_headers.push(("cookie".into(), cookie_val.to_str().unwrap_or("").to_string()));
+            }
+        } else if let Ok(jar) = self.client.cookies.lock() {
+            // Legacy fallback: simple domain-keyed jar
             if let Some(domain_cookies) = jar.get(host) {
                 if !domain_cookies.is_empty() {
                     let cookie_str: String = domain_cookies.iter()
@@ -409,27 +482,48 @@ impl<'a> RequestBuilder<'a> {
             }
         }
 
+        // Default headers from ClientBuilder.default_headers()
+        for (k, v) in self.client.default_headers.iter() {
+            let name = k.as_str().to_lowercase();
+            if !h2_headers.iter().any(|(h, _)| h.to_lowercase() == name)
+                && !self.headers.iter().any(|(h, _)| h.to_lowercase() == name)
+            {
+                h2_headers.push((k.as_str().to_string(), v.to_str().unwrap_or("").to_string()));
+            }
+        }
+
         // Append user-provided headers
         for (k, v) in &self.headers {
             h2_headers.push((k.clone(), v.clone()));
         }
 
-        // Step 5: Send request via H2 — fresh encoder/decoder per connection
-        let mut encoder = ChromeEncoder::new(self.client.hpack_table_size);
-        let mut decoder = StandardDecoder::new(self.client.hpack_table_size);
+        // Step 5: Send request via H2 — reuse pooled connection or create new
+        let body_to_send = if method == "GET" || method == "HEAD" {
+            None
+        } else {
+            self.body.as_deref()
+        };
 
-            // Body: only send if method is not GET/HEAD (redirects may have changed method)
-            let body_to_send = if method == "GET" || method == "HEAD" {
-                None
-            } else {
-                self.body.as_deref()
-            };
-            let h2_resp = conn.send_request(
-            &h2_headers,
-            body_to_send,
-            &mut encoder,
-            &mut decoder,
-        ).await?;
+        // Try pooled connection first, fallback to new on error
+        let (h2_resp, mut entry) = if let Some(mut entry) = pooled {
+            match entry.conn.send_request(&h2_headers, body_to_send, &mut entry.encoder, &mut entry.decoder).await {
+                Ok(resp) => (resp, entry),
+                Err(_) => {
+                    // Pooled conn stale/dead — create fresh
+                    let entry = self.new_connection(host, port).await?;
+                    let mut e = entry;
+                    let resp = e.conn.send_request(&h2_headers, body_to_send, &mut e.encoder, &mut e.decoder).await?;
+                    (resp, e)
+                }
+            }
+        } else {
+            let mut entry = self.new_connection(host, port).await?;
+            let resp = entry.conn.send_request(&h2_headers, body_to_send, &mut entry.encoder, &mut entry.decoder).await?;
+            (resp, entry)
+        };
+
+        // Return connection to pool for reuse
+        self.client.pool.lock().await.insert(pool_key, entry);
 
         // Step 6: Parse status from response headers
         let status_code = h2_resp.headers.iter()
@@ -442,15 +536,23 @@ impl<'a> RequestBuilder<'a> {
             .collect();
 
         // Store set-cookie headers in jar (cap individual cookie size at 4KB)
-        for (k, v) in &headers {
-            if k.to_lowercase() == "set-cookie" {
-                if v.len() > 4096 { continue; } // Skip oversized cookies
-                if let Some(cookie_part) = v.split(';').next() {
-                    if let Some((name, value)) = cookie_part.split_once('=') {
-                        if let Ok(mut jar) = self.client.cookies.lock() {
-                            jar.entry(host.to_string())
-                                .or_default()
-                                .push((name.trim().to_string(), value.trim().to_string()));
+        if let Some(ref jar) = self.client.cookie_jar {
+            for (k, v) in &headers {
+                if k.to_lowercase() == "set-cookie" {
+                    jar.add_cookie_str(v, &url);
+                }
+            }
+        } else {
+            for (k, v) in &headers {
+                if k.to_lowercase() == "set-cookie" {
+                    if v.len() > 4096 { continue; }
+                    if let Some(cookie_part) = v.split(';').next() {
+                        if let Some((name, value)) = cookie_part.split_once('=') {
+                            if let Ok(mut jar) = self.client.cookies.lock() {
+                                jar.entry(host.to_string())
+                                    .or_default()
+                                    .push((name.trim().to_string(), value.trim().to_string()));
+                            }
                         }
                     }
                 }
@@ -462,5 +564,19 @@ impl<'a> RequestBuilder<'a> {
             headers,
             body: h2_resp.body,
         })
+    }
+
+    /// Create a fresh TCP → TLS → H2 connection for the given host:port.
+    async fn new_connection(&self, host: &str, port: u16) -> Result<PooledConn, ClientError> {
+        let tcp = if let Some(ref proxy_config) = self.client.proxy {
+            establish_tunnel(proxy_config, host, port).await?
+        } else {
+            TcpStream::connect((host, port)).await?
+        };
+        let tls_stream = self.client.tls.connect(host, port, tcp).await?;
+        let conn = Connection::handshake(tls_stream).await?;
+        let encoder = ChromeEncoder::new(self.client.hpack_table_size);
+        let decoder = StandardDecoder::new(self.client.hpack_table_size);
+        Ok(PooledConn { conn, encoder, decoder })
     }
 }
