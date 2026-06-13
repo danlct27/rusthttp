@@ -62,6 +62,11 @@ impl Response {
         self.status_code
     }
 
+    /// Get all response headers as a slice.
+    pub fn headers(&self) -> &[(String, String)] {
+        &self.headers
+    }
+
     /// Get the response body as bytes.
     pub fn bytes(&self) -> &Bytes {
         &self.body
