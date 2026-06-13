@@ -67,9 +67,12 @@ impl Response {
         &self.body
     }
 
-    /// Get the response body as UTF-8 text.
-    pub fn text(&self) -> Result<&str, std::str::Utf8Error> {
-        std::str::from_utf8(&self.body)
+    /// Get the response body as UTF-8 text (auto-decompresses).
+    /// Compatible with rquest's `.text().await?` pattern (just remove .await).
+    pub fn text(&self) -> Result<String, ClientError> {
+        let bytes = self.decompress_body()?;
+        String::from_utf8(bytes)
+            .map_err(|e| ClientError::InvalidUrl(format!("utf8 error: {}", e)))
     }
 
     /// Deserialize the response body as JSON.
@@ -293,6 +296,12 @@ impl ClientBuilder {
         self // decompression is always on via accept-encoding
     }
 
+    /// Disable redirect following (for 302 detection patterns).
+    pub fn no_redirect(mut self) -> Self {
+        self.max_redirects = 0;
+        self
+    }
+
     /// Build the Client.
     pub fn build(self) -> Result<Client, ClientError> {
         let profile = self.profile.unwrap_or_else(TlsProfile::chrome149);
@@ -360,12 +369,13 @@ impl<'a> RequestBuilder<'a> {
     }
 
     /// Set a JSON request body (sets content-type automatically).
-    pub fn json<T: serde::Serialize>(mut self, value: &T) -> Result<Self, ClientError> {
+    /// Panics if serialization fails (matching rquest's infallible API).
+    pub fn json<T: serde::Serialize>(mut self, value: &T) -> Self {
         let body = serde_json::to_vec(value)
-            .map_err(|e| ClientError::InvalidUrl(format!("json serialize error: {}", e)))?;
+            .expect("json serialize failed");
         self.headers.push(("content-type".to_string(), "application/json".to_string()));
         self.body = Some(body);
-        Ok(self)
+        self
     }
 
     /// Send the request and return the response.

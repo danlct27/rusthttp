@@ -157,6 +157,16 @@ impl HeaderMap {
         self.get(name).is_some()
     }
 
+    /// Remove a header by name. Returns the removed value if it existed.
+    pub fn remove(&mut self, name: HeaderName) -> Option<HeaderValue> {
+        let lower = name.0.to_lowercase();
+        if let Some(pos) = self.entries.iter().position(|(k, _)| k.0.to_lowercase() == lower) {
+            Some(self.entries.remove(pos).1)
+        } else {
+            None
+        }
+    }
+
     /// Number of entries.
     pub fn len(&self) -> usize {
         self.entries.len()
