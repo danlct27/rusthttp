@@ -110,8 +110,13 @@ impl TlsConnector {
         builder.set_min_proto_version(Some(self.profile.min_version))?;
         builder.set_max_proto_version(Some(self.profile.max_version))?;
 
-        // Cipher suites — join with colon for BoringSSL
-        let cipher_string = self.profile.cipher_suites.join(":");
+        // Cipher suites — convert IANA names to BoringSSL/OpenSSL names.
+        // TLS 1.3 ciphers are auto-enabled in BoringSSL, but we set them via
+        // set_ciphersuites() style names. TLS 1.2 ciphers need OpenSSL names.
+        let openssl_names: Vec<&str> = self.profile.cipher_suites.iter()
+            .filter_map(|name| iana_to_openssl(name))
+            .collect();
+        let cipher_string = openssl_names.join(":");
         builder.set_cipher_list(&cipher_string).map_err(|e| {
             TlsError::InvalidCipher(format!("failed to set cipher list '{}': {}", cipher_string, e))
         })?;
@@ -126,13 +131,16 @@ impl TlsConnector {
                 ))
             })?;
 
-        // Supported groups (curves + PQ) — fallback without PQ if BoringSSL doesn't support it
-        let groups_string = self.profile.supported_groups.join(":");
+        // Supported groups (curves + PQ) — normalize names and fallback without PQ
+        let normalized_groups: Vec<String> = self.profile.supported_groups.iter()
+            .map(|s| normalize_curve_name(s))
+            .collect();
+        let groups_string = normalized_groups.join(":");
         if builder.set_curves_list(&groups_string).is_err() {
-            // Filter out PQ groups and retry with classical curves only
-            let classical: Vec<&str> = self.profile.supported_groups.iter()
-                .map(|s| s.as_str())
+            // Filter out PQ groups and retry with classical curves only (normalized)
+            let classical: Vec<String> = normalized_groups.iter()
                 .filter(|s| !s.contains("MLKEM") && !s.contains("Kyber"))
+                .cloned()
                 .collect();
             let fallback = classical.join(":");
             debug!(
@@ -199,6 +207,9 @@ impl TlsConnector {
         _port: u16,
         tcp_stream: TcpStream,
     ) -> Result<SslStream<TcpStream>, TlsError> {
+        use std::time::Duration;
+        use tokio::time::timeout;
+
         debug!(host, "starting tls handshake");
 
         let connector = self.build_connector()?;
@@ -208,13 +219,17 @@ impl TlsConnector {
             config.set_verify_hostname(false);
         }
 
-        let stream =
-            tokio_boring::connect(config, host, tcp_stream)
-                .await
-                .map_err(|e| TlsError::Handshake {
-                    host: host.to_owned(),
-                    detail: e.to_string(),
-                })?;
+        let handshake_timeout = Duration::from_secs(10);
+        let stream = timeout(handshake_timeout, tokio_boring::connect(config, host, tcp_stream))
+            .await
+            .map_err(|_| TlsError::Handshake {
+                host: host.to_owned(),
+                detail: "handshake timeout (10s)".into(),
+            })?
+            .map_err(|e| TlsError::Handshake {
+                host: host.to_owned(),
+                detail: e.to_string(),
+            })?;
 
         debug!(host, "tls handshake complete");
         Ok(stream)
@@ -239,4 +254,47 @@ fn encode_alpn(protocols: &[String]) -> Result<Vec<u8>, TlsError> {
         buf.extend_from_slice(proto.as_bytes());
     }
     Ok(buf)
+}
+
+/// Normalize curve/group names from JSON profiles to BoringSSL-accepted format.
+/// BoringSSL's set_curves_list() accepts: X25519, P-256, P-384, P-521.
+fn normalize_curve_name(name: &str) -> String {
+    match name.to_lowercase().as_str() {
+        "x25519" => "X25519".into(),
+        "p-256" | "secp256r1" | "prime256v1" => "P-256".into(),
+        "p-384" | "secp384r1" => "P-384".into(),
+        "p-521" | "secp521r1" => "P-521".into(),
+        "x25519mlkem768" => "X25519MLKEM768".into(),
+        _ => name.to_string(),
+    }
+}
+
+/// Map IANA cipher suite names to BoringSSL/OpenSSL cipher string names.
+/// TLS 1.3 ciphers use their own naming convention in BoringSSL.
+fn iana_to_openssl(iana: &str) -> Option<&'static str> {
+    match iana {
+        // TLS 1.3 (BoringSSL accepts these names)
+        "TLS_AES_128_GCM_SHA256" => Some("TLS_AES_128_GCM_SHA256"),
+        "TLS_AES_256_GCM_SHA384" => Some("TLS_AES_256_GCM_SHA384"),
+        "TLS_CHACHA20_POLY1305_SHA256" => Some("TLS_CHACHA20_POLY1305_SHA256"),
+        // TLS 1.2 ECDHE
+        "TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256" => Some("ECDHE-ECDSA-AES128-GCM-SHA256"),
+        "TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256" => Some("ECDHE-RSA-AES128-GCM-SHA256"),
+        "TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384" => Some("ECDHE-ECDSA-AES256-GCM-SHA384"),
+        "TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384" => Some("ECDHE-RSA-AES256-GCM-SHA384"),
+        "TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256" => Some("ECDHE-ECDSA-CHACHA20-POLY1305"),
+        "TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256" => Some("ECDHE-RSA-CHACHA20-POLY1305"),
+        "TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA" => Some("ECDHE-RSA-AES128-SHA"),
+        "TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA" => Some("ECDHE-RSA-AES256-SHA"),
+        // TLS 1.2 RSA
+        "TLS_RSA_WITH_AES_128_GCM_SHA256" => Some("AES128-GCM-SHA256"),
+        "TLS_RSA_WITH_AES_256_GCM_SHA384" => Some("AES256-GCM-SHA384"),
+        "TLS_RSA_WITH_AES_128_CBC_SHA" => Some("AES128-SHA"),
+        "TLS_RSA_WITH_AES_256_CBC_SHA" => Some("AES256-SHA"),
+        // Unknown — skip with warning
+        _ => {
+            tracing::warn!(cipher = %iana, "unknown cipher suite name, skipping");
+            None
+        }
+    }
 }

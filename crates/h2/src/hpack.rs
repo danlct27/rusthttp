@@ -184,15 +184,37 @@ fn huff_encode(input: &[u8]) -> Vec<u8> {
 }
 
 fn huff_decode(input: &[u8]) -> Result<Vec<u8>, H2Error> {
-    // Build sorted lookup table on first use (sorted by code length, then code value)
+    // Fast Huffman decode using accept-table approach:
+    // Process 4 bits at a time through a state machine.
     use std::sync::OnceLock;
-    static TABLE: OnceLock<Vec<(u32, u8, u8)>> = OnceLock::new(); // (code, len, sym)
+
+    // Build a decode table: for each (state, nibble) → (next_state, Option<symbol>)
+    // State = partial code bits accumulated. We use a simpler approach:
+    // Accumulate bits and check against sorted table (by length) with early exit.
+    static TABLE: OnceLock<Vec<(u32, u8, u8)>> = OnceLock::new(); // (code, len, sym) sorted by len
     let table = TABLE.get_or_init(|| {
         let mut t: Vec<(u32, u8, u8)> = HUFF.iter().enumerate().take(256)
             .map(|(sym, &(code, len))| (code, len, sym as u8))
             .collect();
         t.sort_by_key(|&(_, len, _)| len);
         t
+    });
+
+    // Build prefix lookup for common short codes (5-8 bits cover ~80% of symbols)
+    static FAST_TABLE: OnceLock<[i16; 256]> = OnceLock::new(); // 8-bit prefix → symbol or -1
+    let fast = FAST_TABLE.get_or_init(|| {
+        let mut ft = [-1i16; 256];
+        for &(code, len, sym) in table.iter() {
+            if len <= 8 {
+                // Fill all entries that match this prefix
+                let shift = 8 - len;
+                let base = (code as usize) << shift;
+                for suffix in 0..(1usize << shift) {
+                    ft[base | suffix] = sym as i16;
+                }
+            }
+        }
+        ft
     });
 
     let mut out = Vec::new();
@@ -203,11 +225,30 @@ fn huff_decode(input: &[u8]) -> Result<Vec<u8>, H2Error> {
         bits = (bits << 8) | byte as u64;
         nbits += 8;
 
-        'decode: while nbits >= 5 {
+        while nbits >= 5 {
+            // Fast path: try 8-bit lookup first
+            if nbits >= 8 {
+                let peek = ((bits >> (nbits - 8)) & 0xFF) as usize;
+                let sym = fast[peek];
+                if sym >= 0 {
+                    // Find actual length of this symbol (safe: static table always has it)
+                    if let Some(&(_, len, _)) = table.iter().find(|&&(_, _, s)| s == sym as u8) {
+                        if len <= nbits {
+                            out.push(sym as u8);
+                            if out.len() > MAX_HEADER_VALUE_LEN {
+                                return Err(H2Error::Hpack("decoded header too large".into()));
+                            }
+                            nbits -= len;
+                            bits &= (1u64 << nbits) - 1;
+                            continue;
+                        }
+                    }
+                }
+            }
+            // Slow path: scan by length
             let mut found = false;
-            // Scan by length group (5..=30 bits) — most symbols are 5-8 bits
             for &(code, len, sym) in table.iter() {
-                if len > nbits { break; } // sorted by len, so no more matches possible
+                if len > nbits { break; }
                 if (bits >> (nbits - len)) as u32 == code {
                     out.push(sym);
                     if out.len() > MAX_HEADER_VALUE_LEN {
@@ -219,7 +260,7 @@ fn huff_decode(input: &[u8]) -> Result<Vec<u8>, H2Error> {
                     break;
                 }
             }
-            if !found { break 'decode; }
+            if !found { break; }
         }
     }
 

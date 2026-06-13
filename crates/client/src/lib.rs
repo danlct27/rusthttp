@@ -232,9 +232,10 @@ impl<'a> RequestBuilder<'a> {
     pub async fn send(self) -> Result<Response, ClientError> {
         let mut current_url = self.url.clone();
         let mut redirects = 0u8;
+        let mut method = self.method.clone();
 
         loop {
-            let resp = self.execute_single(&current_url).await?;
+            let resp = self.execute_single_with_method(&current_url, &method).await?;
 
             // Follow redirects (301, 302, 303, 307, 308)
             if self.client.max_redirects > 0
@@ -249,6 +250,11 @@ impl<'a> RequestBuilder<'a> {
                         .map_err(|e| ClientError::InvalidUrl(e.to_string()))?;
                     current_url = next.to_string();
                     redirects += 1;
+                    // RFC 7231: 301/302/303 → change method to GET, drop body
+                    // 307/308 → preserve method and body
+                    if matches!(resp.status_code, 301 | 302 | 303) {
+                        method = "GET".into();
+                    }
                     continue;
                 }
             }
@@ -258,7 +264,7 @@ impl<'a> RequestBuilder<'a> {
     }
 
     /// Execute a single request (no redirect following).
-    async fn execute_single(&self, url_str: &str) -> Result<Response, ClientError> {
+    async fn execute_single_with_method(&self, url_str: &str, method: &str) -> Result<Response, ClientError> {
         let url = Url::parse(url_str)
             .map_err(|e| ClientError::InvalidUrl(format!("{}: {}", url_str, e)))?;
 
@@ -280,7 +286,10 @@ impl<'a> RequestBuilder<'a> {
         let mut conn = Connection::handshake(tls_stream).await?;
 
         // Step 4: Build Chrome-ordered pseudo-headers + user headers
-        let path = if url.path().is_empty() { "/" } else { url.path() };
+        let path = match url.query() {
+            Some(q) => format!("{}?{}", if url.path().is_empty() { "/" } else { url.path() }, q),
+            None => (if url.path().is_empty() { "/" } else { url.path() }).to_string(),
+        };
         let authority = if port == 443 {
             host.to_string()
         } else {
@@ -288,10 +297,10 @@ impl<'a> RequestBuilder<'a> {
         };
 
         let mut h2_headers: Vec<(String, String)> = vec![
-            (":method".into(), self.method.clone()),
+            (":method".into(), method.to_string()),
             (":authority".into(), authority),
             (":scheme".into(), "https".into()),
-            (":path".into(), path.into()),
+            (":path".into(), path.clone()),
         ];
 
         // Add default headers Chrome sends (from client profile)
@@ -345,9 +354,15 @@ impl<'a> RequestBuilder<'a> {
         let mut encoder = ChromeEncoder::new(self.client.hpack_table_size);
         let mut decoder = StandardDecoder::new(self.client.hpack_table_size);
 
-        let h2_resp = conn.send_request(
+            // Body: only send if method is not GET/HEAD (redirects may have changed method)
+            let body_to_send = if method == "GET" || method == "HEAD" {
+                None
+            } else {
+                self.body.as_deref()
+            };
+            let h2_resp = conn.send_request(
             &h2_headers,
-            self.body.as_deref(),
+            body_to_send,
             &mut encoder,
             &mut decoder,
         ).await?;
@@ -362,9 +377,10 @@ impl<'a> RequestBuilder<'a> {
             .filter(|(k, _)| !k.starts_with(':'))
             .collect();
 
-        // Store set-cookie headers in jar
+        // Store set-cookie headers in jar (cap individual cookie size at 4KB)
         for (k, v) in &headers {
             if k.to_lowercase() == "set-cookie" {
+                if v.len() > 4096 { continue; } // Skip oversized cookies
                 if let Some(cookie_part) = v.split(';').next() {
                     if let Some((name, value)) = cookie_part.split_once('=') {
                         if let Ok(mut jar) = self.client.cookies.lock() {

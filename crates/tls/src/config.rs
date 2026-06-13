@@ -316,7 +316,6 @@ impl TlsProfile {
                 "TLS_RSA_WITH_AES_256_CBC_SHA".into(),
             ],
             supported_groups: vec![
-                "X25519MLKEM768".into(),
                 "X25519".into(),
                 "P-256".into(),
                 "P-384".into(),
@@ -585,9 +584,10 @@ mod tests {
     }
 
     #[test]
-    fn test_chrome149_has_pq_group() {
+    fn test_chrome149_has_correct_groups() {
         let p = TlsProfile::chrome149();
-        assert_eq!(p.supported_groups[0], "X25519MLKEM768");
+        assert_eq!(p.supported_groups[0], "X25519");
+        assert_eq!(p.supported_groups.len(), 3);
     }
 
     #[test]

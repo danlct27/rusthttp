@@ -14,6 +14,10 @@ use crate::hpack::{HpackDecoder, HpackEncoder};
 use crate::stream::{Stream, StreamIdAllocator};
 use crate::H2Error;
 
+/// Max frame size we accept from the server (RFC 9113 §4.2 max = 2^24-1 = 16MB).
+/// We're permissive on incoming to handle servers that send large DATA frames.
+const MAX_RECV_FRAME_SIZE: u32 = 16_777_215;
+
 /// An HTTP/2 response.
 #[derive(Debug)]
 pub struct Response {
@@ -80,10 +84,15 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
 
     /// Read frames until we get the server's SETTINGS, then send ACK.
     async fn read_and_ack_settings(&mut self) -> Result<(), H2Error> {
-        // SETTINGS/GOAWAY frames should never exceed 64KB — cap to prevent DoS
-        const HANDSHAKE_FRAME_CAP: u32 = 65536;
+        const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
+        let deadline = tokio::time::Instant::now() + HANDSHAKE_TIMEOUT;
         loop {
-            let frame = read_frame_with_max(&mut self.io, HANDSHAKE_FRAME_CAP).await?;
+            let frame = timeout(
+                deadline.saturating_duration_since(tokio::time::Instant::now()),
+                read_frame_with_max(&mut self.io, MAX_RECV_FRAME_SIZE),
+            )
+            .await
+            .map_err(|_| H2Error::Protocol("settings handshake timeout".into()))??;
             match frame {
                 Frame::Settings { ack: false, ref params } => {
                     // Track server's settings
@@ -173,6 +182,9 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
         let stream_id = self.stream_ids.next_id()?;
         let end_stream = body.is_none();
 
+        // Track stream (create before sending so flow control works)
+        let mut stream = Stream::new(stream_id, crate::chrome::INITIAL_WINDOW_SIZE);
+
         // Encode HEADERS frame
         let hpack_block = encoder.encode(headers);
         let headers_frame = Frame::Headers {
@@ -183,24 +195,41 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
         };
         write_frame(&mut self.io, &headers_frame).await?;
 
-        // Send DATA if body present — chunk to peer_max_frame_size
+        // Send DATA if body present — chunk to peer_max_frame_size, respect flow control
         if let Some(data) = body {
             let max = self.peer_max_frame_size as usize;
-            let chunks: Vec<&[u8]> = data.chunks(max).collect();
-            let last_idx = chunks.len().saturating_sub(1);
-            for (i, chunk) in chunks.iter().enumerate() {
+            let mut offset = 0;
+            while offset < data.len() {
+                // Wait for send window to be positive (guard against negative wrap)
+                let available = (self.send_window.max(0) as usize)
+                    .min(stream.send_window.max(0) as usize)
+                    .min(max);
+                if available == 0 {
+                    // Read frames until we get a WINDOW_UPDATE
+                    let frame = timeout(self.response_timeout, read_frame_with_max(&mut self.io, MAX_RECV_FRAME_SIZE))
+                        .await
+                        .map_err(|_| H2Error::Protocol("flow control timeout waiting for WINDOW_UPDATE".into()))??;
+                    self.handle_frame(frame).await?;
+                    continue;
+                }
+                let end = (offset + available).min(data.len());
+                let is_last = end == data.len();
+                let chunk = &data[offset..end];
                 let data_frame = Frame::Data {
                     stream_id,
-                    end_stream: i == last_idx,
+                    end_stream: is_last,
                     payload: Bytes::copy_from_slice(chunk),
                 };
                 write_frame(&mut self.io, &data_frame).await?;
+                let sent = chunk.len() as i32;
+                self.send_window -= sent;
+                stream.send_window -= sent;
+                offset = end;
             }
         }
         self.io.flush().await?;
 
-        // Track stream
-        let mut stream = Stream::new(stream_id, crate::chrome::INITIAL_WINDOW_SIZE);
+        // Mark our side as done sending
         stream.send_end_stream()?;
 
         // Read response (with timeout guard against GOAWAY-then-silence)
@@ -208,17 +237,38 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
         let mut resp_body = BytesMut::new();
 
         loop {
-            let frame = timeout(self.response_timeout, read_frame_with_max(&mut self.io, self.peer_max_frame_size))
+            let frame = timeout(self.response_timeout, read_frame_with_max(&mut self.io, MAX_RECV_FRAME_SIZE))
                 .await
                 .map_err(|_| H2Error::Protocol("response read timeout".into()))??;
             match frame {
                 Frame::Headers {
                     stream_id: sid,
                     end_stream: es,
+                    end_headers,
                     payload,
                     ..
                 } if sid == stream_id => {
-                    resp_headers = decoder.decode(&payload)?;
+                    let mut header_block = payload.to_vec();
+                    // If END_HEADERS not set, read CONTINUATION frames
+                    if !end_headers {
+                        const MAX_HEADER_BLOCK_SIZE: usize = 1_048_576; // 1MB cap
+                        loop {
+                            if header_block.len() > MAX_HEADER_BLOCK_SIZE {
+                                return Err(H2Error::Protocol("header block too large".into()));
+                            }
+                            let cont_frame = timeout(self.response_timeout, read_frame_with_max(&mut self.io, MAX_RECV_FRAME_SIZE))
+                                .await
+                                .map_err(|_| H2Error::Protocol("continuation read timeout".into()))??;
+                            match cont_frame {
+                                Frame::Unknown { header, payload: cont_payload } if header.frame_type == 0x9 && header.stream_id == stream_id => {
+                                    header_block.extend_from_slice(&cont_payload);
+                                    if header.flags & 0x4 != 0 { break; } // END_HEADERS
+                                }
+                                _ => return Err(H2Error::Protocol("expected CONTINUATION frame".into())),
+                            }
+                        }
+                    }
+                    resp_headers = decoder.decode(&header_block)?;
                     if es {
                         stream.recv_end_stream()?;
                         break;
