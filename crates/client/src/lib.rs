@@ -74,6 +74,18 @@ impl Response {
         std::str::from_utf8(&self.body)
     }
 
+    /// Deserialize the response body as JSON.
+    pub fn json<T: serde::de::DeserializeOwned>(&self) -> Result<T, ClientError> {
+        let decompressed = self.decompress_body()?;
+        serde_json::from_slice(&decompressed)
+            .map_err(|e| ClientError::InvalidUrl(format!("json parse error: {}", e)))
+    }
+
+    /// Get the decompressed body (handles gzip, deflate, br).
+    pub fn body_decompressed(&self) -> Result<Vec<u8>, ClientError> {
+        self.decompress_body()
+    }
+
     /// Get a header value by name (case-insensitive).
     pub fn header(&self, name: &str) -> Option<&str> {
         let lower = name.to_lowercase();
@@ -81,6 +93,49 @@ impl Response {
             .iter()
             .find(|(k, _)| k.to_lowercase() == lower)
             .map(|(_, v)| v.as_str())
+    }
+
+    /// Get all values for a header name (case-insensitive).
+    pub fn headers_all(&self, name: &str) -> Vec<&str> {
+        let lower = name.to_lowercase();
+        self.headers
+            .iter()
+            .filter(|(k, _)| k.to_lowercase() == lower)
+            .map(|(_, v)| v.as_str())
+            .collect()
+    }
+
+    fn decompress_body(&self) -> Result<Vec<u8>, ClientError> {
+        let encoding = self.header("content-encoding").unwrap_or("");
+        match encoding {
+            "gzip" | "x-gzip" => {
+                use flate2::read::GzDecoder;
+                use std::io::Read;
+                let mut decoder = GzDecoder::new(&self.body[..]);
+                let mut out = Vec::new();
+                decoder.read_to_end(&mut out)
+                    .map_err(|e| ClientError::Io(e))?;
+                Ok(out)
+            }
+            "deflate" => {
+                use flate2::read::DeflateDecoder;
+                use std::io::Read;
+                let mut decoder = DeflateDecoder::new(&self.body[..]);
+                let mut out = Vec::new();
+                decoder.read_to_end(&mut out)
+                    .map_err(|e| ClientError::Io(e))?;
+                Ok(out)
+            }
+            "br" => {
+                use std::io::Read;
+                let mut decoder = brotli::Decompressor::new(&self.body[..], 4096);
+                let mut out = Vec::new();
+                decoder.read_to_end(&mut out)
+                    .map_err(|e| ClientError::Io(e))?;
+                Ok(out)
+            }
+            _ => Ok(self.body.to_vec()),
+        }
     }
 }
 
@@ -226,6 +281,15 @@ impl<'a> RequestBuilder<'a> {
     pub fn body(mut self, data: Vec<u8>) -> Self {
         self.body = Some(data);
         self
+    }
+
+    /// Set a JSON request body (sets content-type automatically).
+    pub fn json<T: serde::Serialize>(mut self, value: &T) -> Result<Self, ClientError> {
+        let body = serde_json::to_vec(value)
+            .map_err(|e| ClientError::InvalidUrl(format!("json serialize error: {}", e)))?;
+        self.headers.push(("content-type".to_string(), "application/json".to_string()));
+        self.body = Some(body);
+        Ok(self)
     }
 
     /// Send the request and return the response.
