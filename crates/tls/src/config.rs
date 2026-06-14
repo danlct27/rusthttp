@@ -332,6 +332,122 @@ impl TlsProfile {
         }
     }
 
+    /// Returns the Chrome 148 TLS fingerprint profile.
+    pub fn chrome148() -> Self {
+        // Chrome 148 is nearly identical to 149
+        Self::chrome149()
+    }
+
+    /// Returns the Firefox 151 TLS fingerprint profile.
+    pub fn firefox151() -> Self {
+        Self {
+            cipher_suites: vec![
+                "TLS_AES_128_GCM_SHA256".into(),
+                "TLS_CHACHA20_POLY1305_SHA256".into(),
+                "TLS_AES_256_GCM_SHA384".into(),
+                "TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256".into(),
+                "TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256".into(),
+                "TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256".into(),
+                "TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256".into(),
+                "TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384".into(),
+                "TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384".into(),
+                "TLS_ECDHE_ECDSA_WITH_AES_256_CBC_SHA".into(),
+                "TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA".into(),
+                "TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA".into(),
+                "TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA".into(),
+                "TLS_RSA_WITH_AES_128_GCM_SHA256".into(),
+                "TLS_RSA_WITH_AES_256_GCM_SHA384".into(),
+                "TLS_RSA_WITH_AES_128_CBC_SHA".into(),
+                "TLS_RSA_WITH_AES_256_CBC_SHA".into(),
+            ],
+            supported_groups: vec![
+                "X25519".into(),
+                "P-256".into(),
+                "P-384".into(),
+                "P-521".into(),
+                "ffdhe2048".into(),
+                "ffdhe3072".into(),
+            ],
+            signature_algorithms: "ecdsa_secp256r1_sha256:ecdsa_secp384r1_sha384:ecdsa_secp521r1_sha512:rsa_pss_rsae_sha256:rsa_pss_rsae_sha384:rsa_pss_rsae_sha512:rsa_pkcs1_sha256:rsa_pkcs1_sha384:rsa_pkcs1_sha512:ecdsa_sha1:rsa_pkcs1_sha1".into(),
+            grease: false, // Firefox doesn't use GREASE
+            alps: false,
+            cert_compression: CertCompression::None,
+            min_version: SslVersion::TLS1_2,
+            max_version: SslVersion::TLS1_3,
+            permute_extensions: false,
+            alpn_protocols: vec!["h2".into(), "http/1.1".into()],
+            extensions_order: None,
+        }
+    }
+
+    /// Returns the Firefox 150 TLS fingerprint profile.
+    pub fn firefox150() -> Self {
+        Self::firefox151()
+    }
+
+    /// Returns the Safari 26 (macOS) TLS fingerprint profile.
+    pub fn safari26() -> Self {
+        Self {
+            cipher_suites: vec![
+                "TLS_AES_128_GCM_SHA256".into(),
+                "TLS_AES_256_GCM_SHA384".into(),
+                "TLS_CHACHA20_POLY1305_SHA256".into(),
+                "TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384".into(),
+                "TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256".into(),
+                "TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256".into(),
+                "TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384".into(),
+                "TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256".into(),
+                "TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256".into(),
+                "TLS_ECDHE_ECDSA_WITH_AES_256_CBC_SHA".into(),
+                "TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA".into(),
+                "TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA".into(),
+                "TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA".into(),
+                "TLS_RSA_WITH_AES_256_GCM_SHA384".into(),
+                "TLS_RSA_WITH_AES_128_GCM_SHA256".into(),
+                "TLS_RSA_WITH_AES_256_CBC_SHA".into(),
+                "TLS_RSA_WITH_AES_128_CBC_SHA".into(),
+            ],
+            supported_groups: vec![
+                "X25519".into(),
+                "P-256".into(),
+                "P-384".into(),
+                "P-521".into(),
+            ],
+            signature_algorithms: "ecdsa_secp256r1_sha256:rsa_pss_rsae_sha256:rsa_pkcs1_sha256:ecdsa_secp384r1_sha384:rsa_pss_rsae_sha384:rsa_pkcs1_sha384:rsa_pss_rsae_sha512:rsa_pkcs1_sha512:rsa_pkcs1_sha1".into(),
+            grease: true,
+            alps: false,
+            cert_compression: CertCompression::Zlib, // Safari uses zlib
+            min_version: SslVersion::TLS1_2,
+            max_version: SslVersion::TLS1_3,
+            permute_extensions: false,
+            alpn_protocols: vec!["h2".into(), "http/1.1".into()],
+            extensions_order: None,
+        }
+    }
+
+    /// Returns the Safari 26 iOS TLS fingerprint profile.
+    pub fn safari26_ios() -> Self {
+        Self::safari26()
+    }
+
+    /// Returns the Edge 149 TLS fingerprint profile.
+    pub fn edge149() -> Self {
+        // Edge uses the same Chromium engine as Chrome
+        Self::chrome149()
+    }
+
+    /// Returns a random mainstream browser profile.
+    pub fn random_mainstream() -> Self {
+        use rand::Rng;
+        match rand::thread_rng().gen_range(0..5) {
+            0 => Self::chrome149(),
+            1 => Self::firefox151(),
+            2 => Self::safari26(),
+            3 => Self::edge149(),
+            _ => Self::chrome148(),
+        }
+    }
+
     /// Create a profile from a loaded JSON profile.
     pub fn from_json(json: &ProfileJson) -> Result<Self, TlsError> {
         Self::from_tls_section(&json.tls)

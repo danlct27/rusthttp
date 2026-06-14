@@ -302,9 +302,65 @@ pub struct ClientBuilder {
 }
 
 impl ClientBuilder {
-    /// Use Chrome 149 TLS/HTTP2 fingerprint.
+    // ========== Browser Profile Shortcuts ==========
+
+    /// Use Chrome 149 TLS/HTTP2 fingerprint (default).
     pub fn chrome(mut self) -> Self {
         self.profile = Some(TlsProfile::chrome149());
+        self.max_redirects = 10;
+        self
+    }
+
+    /// Alias for chrome() — Chrome 149.
+    pub fn chrome149(self) -> Self {
+        self.chrome()
+    }
+
+    /// Use Chrome 148 TLS fingerprint.
+    pub fn chrome148(mut self) -> Self {
+        self.profile = Some(TlsProfile::chrome148());
+        self.max_redirects = 10;
+        self
+    }
+
+    /// Use Firefox 151 TLS fingerprint.
+    pub fn firefox(mut self) -> Self {
+        self.profile = Some(TlsProfile::firefox151());
+        self.max_redirects = 10;
+        self
+    }
+
+    /// Use Firefox 150 TLS fingerprint.
+    pub fn firefox150(mut self) -> Self {
+        self.profile = Some(TlsProfile::firefox150());
+        self.max_redirects = 10;
+        self
+    }
+
+    /// Use Safari 26 (macOS) TLS fingerprint.
+    pub fn safari(mut self) -> Self {
+        self.profile = Some(TlsProfile::safari26());
+        self.max_redirects = 10;
+        self
+    }
+
+    /// Use Safari 26 iOS TLS fingerprint.
+    pub fn safari_ios(mut self) -> Self {
+        self.profile = Some(TlsProfile::safari26_ios());
+        self.max_redirects = 10;
+        self
+    }
+
+    /// Use Edge 149 TLS fingerprint.
+    pub fn edge(mut self) -> Self {
+        self.profile = Some(TlsProfile::edge149());
+        self.max_redirects = 10;
+        self
+    }
+
+    /// Use a random mainstream browser profile.
+    pub fn random(mut self) -> Self {
+        self.profile = Some(TlsProfile::random_mainstream());
         self.max_redirects = 10;
         self
     }
