@@ -119,13 +119,7 @@ async fn main() -> ExitCode {
                 eprintln!();
             }
 
-            match resp.text() {
-                Ok(text) => println!("{}", text),
-                Err(_) => {
-                    // Binary response — print byte count
-                    println!("[binary response: {} bytes]", resp.body.len());
-                }
-            }
+            println!("{}", resp.text());
 
             if resp.status() >= 400 {
                 return ExitCode::from(1);

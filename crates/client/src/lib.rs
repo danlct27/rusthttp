@@ -122,11 +122,12 @@ impl Response {
     }
 
     /// Get the response body as UTF-8 text (auto-decompresses).
-    /// Compatible with rquest's `.text().await?` pattern (just remove .await).
-    pub fn text(&self) -> Result<String, ClientError> {
-        let bytes = self.decompress_body()?;
-        String::from_utf8(bytes)
-            .map_err(|e| ClientError::InvalidUrl(format!("utf8 error: {}", e)))
+    /// Returns lossy-converted string if bytes are not valid UTF-8.
+    pub fn text(&self) -> String {
+        match self.decompress_body() {
+            Ok(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
+            Err(_) => String::from_utf8_lossy(&self.body).into_owned(),
+        }
     }
 
     /// Deserialize the response body as JSON.
@@ -369,13 +370,28 @@ impl ClientBuilder {
         self
     }
 
-    /// Set an HTTP CONNECT proxy.
+    /// Set an HTTP CONNECT proxy. Credentials can be in URL: `http://user:pass@host:8080`
     pub fn proxy(mut self, url: &str) -> Self {
+        // Parse credentials from URL if present
+        if let Ok(parsed) = url::Url::parse(url) {
+            let user = parsed.username();
+            let pass = parsed.password().unwrap_or("");
+            if !user.is_empty() {
+                self.proxy_auth = Some((user.to_string(), pass.to_string()));
+                // Rebuild URL without credentials
+                let mut clean = parsed.clone();
+                let _ = clean.set_username("");
+                let _ = clean.set_password(None);
+                self.proxy_url = Some(clean.to_string());
+                return self;
+            }
+        }
         self.proxy_url = Some(url.to_string());
         self
     }
 
-    /// Set proxy authentication credentials.
+    /// Set proxy authentication credentials (alternative to URL-embedded).
+    #[deprecated(note = "Use .proxy(\"http://user:pass@host:8080\") instead")]
     pub fn proxy_auth(mut self, user: &str, pass: &str) -> Self {
         self.proxy_auth = Some((user.to_string(), pass.to_string()));
         self
