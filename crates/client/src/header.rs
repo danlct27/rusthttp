@@ -110,6 +110,18 @@ impl From<String> for HeaderValue {
     }
 }
 
+impl PartialEq<str> for HeaderValue {
+    fn eq(&self, other: &str) -> bool {
+        self.0 == other
+    }
+}
+
+impl PartialEq<&str> for HeaderValue {
+    fn eq(&self, other: &&str) -> bool {
+        self.0 == *other
+    }
+}
+
 impl std::str::FromStr for HeaderValue {
     type Err = InvalidHeaderValue;
     fn from_str(s: &str) -> Result<Self, Self::Err> {

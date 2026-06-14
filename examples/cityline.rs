@@ -41,9 +41,8 @@ async fn main() {
                 println!("❌ BLOCKED by WAF");
             } else {
                 println!("✅ PASSED WAF");
-                if let Ok(text) = resp.text() {
-                    println!("Response preview: {}", &text[..text.len().min(200)]);
-                }
+                let text = resp.text();
+                println!("Response preview: {}", &text[..text.len().min(200)]);
             }
         }
         Err(e) => println!("Error: {e}"),
