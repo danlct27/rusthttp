@@ -103,6 +103,13 @@ impl From<String> for HeaderValue {
     }
 }
 
+impl std::str::FromStr for HeaderValue {
+    type Err = InvalidHeaderValue;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Self::from_str(s)
+    }
+}
+
 #[derive(Debug)]
 pub struct InvalidHeaderValue;
 
@@ -122,7 +129,10 @@ impl HeaderMap {
     }
 
     /// Insert a header. If the name already exists, replaces the value (last-write-wins).
-    pub fn insert(&mut self, name: HeaderName, value: HeaderValue) {
+    /// Accepts &str, String, HeaderName, HeaderValue for convenience.
+    pub fn insert(&mut self, name: impl Into<HeaderName>, value: impl Into<HeaderValue>) {
+        let name = name.into();
+        let value = value.into();
         if let Some(entry) = self.entries.iter_mut().find(|(k, _)| k == &name) {
             entry.1 = value;
         } else {
@@ -131,8 +141,8 @@ impl HeaderMap {
     }
 
     /// Append a header (allows duplicate names — needed for Set-Cookie etc).
-    pub fn append(&mut self, name: HeaderName, value: HeaderValue) {
-        self.entries.push((name, value));
+    pub fn append(&mut self, name: impl Into<HeaderName>, value: impl Into<HeaderValue>) {
+        self.entries.push((name.into(), value.into()));
     }
 
     /// Get the first value for a header name.
@@ -158,7 +168,8 @@ impl HeaderMap {
     }
 
     /// Remove a header by name. Returns the removed value if it existed.
-    pub fn remove(&mut self, name: HeaderName) -> Option<HeaderValue> {
+    pub fn remove(&mut self, name: impl Into<HeaderName>) -> Option<HeaderValue> {
+        let name = name.into();
         let lower = name.0.to_lowercase();
         if let Some(pos) = self.entries.iter().position(|(k, _)| k.0.to_lowercase() == lower) {
             Some(self.entries.remove(pos).1)

@@ -46,6 +46,49 @@ pub enum ClientError {
     Io(#[from] std::io::Error),
 }
 
+/// HTTP status code wrapper with helper methods (matches rquest API).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StatusCode(pub u16);
+
+impl StatusCode {
+    /// Check if status is 2xx (success).
+    pub fn is_success(&self) -> bool {
+        (200..300).contains(&self.0)
+    }
+
+    /// Check if status is 3xx (redirect).
+    pub fn is_redirect(&self) -> bool {
+        (300..400).contains(&self.0)
+    }
+
+    /// Check if status is 4xx (client error).
+    pub fn is_client_error(&self) -> bool {
+        (400..500).contains(&self.0)
+    }
+
+    /// Check if status is 5xx (server error).
+    pub fn is_server_error(&self) -> bool {
+        (500..600).contains(&self.0)
+    }
+
+    /// Get the raw status code value.
+    pub fn as_u16(&self) -> u16 {
+        self.0
+    }
+}
+
+impl std::fmt::Display for StatusCode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+impl PartialEq<u16> for StatusCode {
+    fn eq(&self, other: &u16) -> bool {
+        self.0 == *other
+    }
+}
+
 /// HTTP response.
 pub struct Response {
     /// HTTP status code.
@@ -58,8 +101,8 @@ pub struct Response {
 
 impl Response {
     /// Get the HTTP status code.
-    pub fn status(&self) -> u16 {
-        self.status_code
+    pub fn status(&self) -> StatusCode {
+        StatusCode(self.status_code)
     }
 
     /// Get all response headers as a slice.
@@ -226,6 +269,17 @@ impl Client {
             body: None,
         }
     }
+
+    /// Send a HEAD request.
+    pub fn head(&self, url: &str) -> RequestBuilder<'_> {
+        RequestBuilder {
+            client: self,
+            method: "HEAD".into(),
+            url: url.into(),
+            headers: Vec::new(),
+            body: None,
+        }
+    }
 }
 
 /// Builder for configuring a Client.
@@ -340,6 +394,12 @@ impl ClientBuilder {
             accept_language: "en-US,en;q=0.9".into(),
             accept_encoding: "gzip, deflate, br".into(),
         })
+    }
+}
+
+impl Default for Client {
+    fn default() -> Self {
+        Client::builder().chrome().build().expect("default client build failed")
     }
 }
 

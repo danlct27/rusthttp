@@ -127,7 +127,7 @@ async fn main() -> ExitCode {
                 }
             }
 
-            if resp.status() >= 400 {
+            if resp.status().as_u16() >= 400 {
                 return ExitCode::from(1);
             }
             ExitCode::SUCCESS
