@@ -303,56 +303,64 @@ pub struct ClientBuilder {
 
 impl ClientBuilder {
     // ========== Browser Profile Shortcuts ==========
+    // Pattern: .browser() = latest, .browser_v(version) = specific version
 
-    /// Use Chrome 149 TLS/HTTP2 fingerprint (default).
-    pub fn chrome(mut self) -> Self {
-        self.profile = Some(TlsProfile::chrome149());
+    /// Use Chrome TLS/HTTP2 fingerprint. Default: latest (149).
+    pub fn chrome(self) -> Self {
+        self.chrome_v(149)
+    }
+
+    /// Use Chrome with specific version.
+    pub fn chrome_v(mut self, version: u32) -> Self {
+        self.profile = Some(match version {
+            148 => TlsProfile::chrome148(),
+            _ => TlsProfile::chrome149(), // default to latest
+        });
         self.max_redirects = 10;
         self
     }
 
-    /// Alias for chrome() — Chrome 149.
-    pub fn chrome149(self) -> Self {
-        self.chrome()
+    /// Use Firefox TLS fingerprint. Default: latest (151).
+    pub fn firefox(self) -> Self {
+        self.firefox_v(151)
     }
 
-    /// Use Chrome 148 TLS fingerprint.
-    pub fn chrome148(mut self) -> Self {
-        self.profile = Some(TlsProfile::chrome148());
+    /// Use Firefox with specific version.
+    pub fn firefox_v(mut self, version: u32) -> Self {
+        self.profile = Some(match version {
+            150 => TlsProfile::firefox150(),
+            _ => TlsProfile::firefox151(), // default to latest
+        });
         self.max_redirects = 10;
         self
     }
 
-    /// Use Firefox 151 TLS fingerprint.
-    pub fn firefox(mut self) -> Self {
-        self.profile = Some(TlsProfile::firefox151());
-        self.max_redirects = 10;
-        self
+    /// Use Safari TLS fingerprint. Default: latest (26 macOS).
+    pub fn safari(self) -> Self {
+        self.safari_v(26)
     }
 
-    /// Use Firefox 150 TLS fingerprint.
-    pub fn firefox150(mut self) -> Self {
-        self.profile = Some(TlsProfile::firefox150());
-        self.max_redirects = 10;
-        self
-    }
-
-    /// Use Safari 26 (macOS) TLS fingerprint.
-    pub fn safari(mut self) -> Self {
+    /// Use Safari with specific version.
+    pub fn safari_v(mut self, _version: u32) -> Self {
         self.profile = Some(TlsProfile::safari26());
         self.max_redirects = 10;
         self
     }
 
-    /// Use Safari 26 iOS TLS fingerprint.
+    /// Use Safari iOS TLS fingerprint.
     pub fn safari_ios(mut self) -> Self {
         self.profile = Some(TlsProfile::safari26_ios());
         self.max_redirects = 10;
         self
     }
 
-    /// Use Edge 149 TLS fingerprint.
-    pub fn edge(mut self) -> Self {
+    /// Use Edge TLS fingerprint. Default: latest (149).
+    pub fn edge(self) -> Self {
+        self.edge_v(149)
+    }
+
+    /// Use Edge with specific version.
+    pub fn edge_v(mut self, _version: u32) -> Self {
         self.profile = Some(TlsProfile::edge149());
         self.max_redirects = 10;
         self
