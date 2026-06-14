@@ -89,6 +89,12 @@ impl PartialEq<u16> for StatusCode {
     }
 }
 
+impl PartialOrd<u16> for StatusCode {
+    fn partial_cmp(&self, other: &u16) -> Option<std::cmp::Ordering> {
+        self.0.partial_cmp(other)
+    }
+}
+
 /// HTTP response.
 pub struct Response {
     /// HTTP status code.
