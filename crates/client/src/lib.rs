@@ -367,9 +367,9 @@ impl<'a> RequestBuilder<'a> {
         self
     }
 
-    /// Set the request body.
-    pub fn body(mut self, data: Vec<u8>) -> Self {
-        self.body = Some(data);
+    /// Set the request body (accepts String, Vec<u8>, &[u8], etc).
+    pub fn body(mut self, data: impl Into<Vec<u8>>) -> Self {
+        self.body = Some(data.into());
         self
     }
 
