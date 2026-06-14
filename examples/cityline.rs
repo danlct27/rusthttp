@@ -6,7 +6,7 @@ use rusthttp::Client;
 async fn main() {
     // Build Chrome-impersonating client
     let client = Client::builder()
-        .chrome()
+        .chrome(None)
         .build()
         .expect("failed to build client");
 

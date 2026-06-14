@@ -86,7 +86,7 @@ async fn main() -> ExitCode {
     };
 
     // Build client
-    let mut builder = Client::builder().chrome();  // Chrome fingerprint
+    let mut builder = Client::builder().chrome(None);  // Chrome fingerprint
     
     if profile != "chrome" {
         eprintln!("Note: only 'chrome' profile implemented, using chrome");

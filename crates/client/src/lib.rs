@@ -303,77 +303,67 @@ pub struct ClientBuilder {
 
 impl ClientBuilder {
     // ========== Browser Profile Shortcuts ==========
-    // Pattern: .browser() = latest, .browser_v(version) = specific version
+    // .browser() = latest, .browser(version) = specific
 
-    /// Use Chrome TLS/HTTP2 fingerprint. Default: latest (149).
-    pub fn chrome(self) -> Self {
-        self.chrome_v(149)
+    /// Chrome TLS fingerprint. `.chrome()` = latest, `.chrome(148)` = specific.
+    pub fn chrome(self, version: impl Into<Option<u32>>) -> Self {
+        let v = version.into().unwrap_or(149);
+        self.chrome_inner(v)
     }
-
-    /// Use Chrome with specific version.
-    pub fn chrome_v(mut self, version: u32) -> Self {
-        self.profile = Some(match version {
-            148 => TlsProfile::chrome148(),
-            _ => TlsProfile::chrome149(), // default to latest
-        });
+    fn chrome_inner(mut self, v: u32) -> Self {
+        self.profile = Some(match v { 148 => TlsProfile::chrome148(), _ => TlsProfile::chrome149() });
         self.max_redirects = 10;
         self
     }
 
-    /// Use Firefox TLS fingerprint. Default: latest (151).
-    pub fn firefox(self) -> Self {
-        self.firefox_v(151)
+    /// Firefox TLS fingerprint. `.firefox()` = latest, `.firefox(150)` = specific.
+    pub fn firefox(self, version: impl Into<Option<u32>>) -> Self {
+        let v = version.into().unwrap_or(151);
+        self.firefox_inner(v)
     }
-
-    /// Use Firefox with specific version.
-    pub fn firefox_v(mut self, version: u32) -> Self {
-        self.profile = Some(match version {
-            150 => TlsProfile::firefox150(),
-            _ => TlsProfile::firefox151(), // default to latest
-        });
+    fn firefox_inner(mut self, v: u32) -> Self {
+        self.profile = Some(match v { 150 => TlsProfile::firefox150(), _ => TlsProfile::firefox151() });
         self.max_redirects = 10;
         self
     }
 
-    /// Use Safari TLS fingerprint. Default: latest (26 macOS).
-    pub fn safari(self) -> Self {
-        self.safari_v(26)
+    /// Safari TLS fingerprint. `.safari()` = latest.
+    pub fn safari(self, version: impl Into<Option<u32>>) -> Self {
+        let _ = version.into();
+        self.safari_inner()
     }
-
-    /// Use Safari with specific version.
-    pub fn safari_v(mut self, _version: u32) -> Self {
+    fn safari_inner(mut self) -> Self {
         self.profile = Some(TlsProfile::safari26());
         self.max_redirects = 10;
         self
     }
 
-    /// Use Safari iOS TLS fingerprint.
+    /// Safari iOS TLS fingerprint.
     pub fn safari_ios(mut self) -> Self {
         self.profile = Some(TlsProfile::safari26_ios());
         self.max_redirects = 10;
         self
     }
 
-    /// Use Edge TLS fingerprint. Default: latest (149).
-    pub fn edge(self) -> Self {
-        self.edge_v(149)
+    /// Edge TLS fingerprint. `.edge()` = latest.
+    pub fn edge(self, version: impl Into<Option<u32>>) -> Self {
+        let _ = version.into();
+        self.edge_inner()
     }
-
-    /// Use Edge with specific version.
-    pub fn edge_v(mut self, _version: u32) -> Self {
+    fn edge_inner(mut self) -> Self {
         self.profile = Some(TlsProfile::edge149());
         self.max_redirects = 10;
         self
     }
 
-    /// Use a random mainstream browser profile.
+    /// Random mainstream browser profile.
     pub fn random(mut self) -> Self {
         self.profile = Some(TlsProfile::random_mainstream());
         self.max_redirects = 10;
         self
     }
 
-    /// Use a custom TLS profile.
+    /// Custom TLS profile.
     pub fn tls_profile(mut self, profile: TlsProfile) -> Self {
         self.profile = Some(profile);
         self
@@ -469,7 +459,7 @@ impl ClientBuilder {
 
 impl Default for Client {
     fn default() -> Self {
-        Client::builder().chrome().build().expect("default client build failed")
+        Client::builder().chrome(None).build().expect("default client build failed")
     }
 }
 
