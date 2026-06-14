@@ -91,6 +91,13 @@ impl fmt::Display for HeaderValue {
     }
 }
 
+impl std::ops::Deref for HeaderValue {
+    type Target = str;
+    fn deref(&self) -> &str {
+        &self.0
+    }
+}
+
 impl From<&str> for HeaderValue {
     fn from(s: &str) -> Self {
         Self(s.to_string())

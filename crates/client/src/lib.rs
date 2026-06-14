@@ -107,8 +107,8 @@ pub struct Response {
 
 impl Response {
     /// Get the HTTP status code.
-    pub fn status(&self) -> StatusCode {
-        StatusCode(self.status_code)
+    pub fn status(&self) -> u16 {
+        self.status_code
     }
 
     /// Get all response headers as a slice.
