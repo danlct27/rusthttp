@@ -1,0 +1,25 @@
+{
+  "id": "FEAT-001",
+  "type": "feat",
+  "description": "Infrastructure: add httparse dep, change PooledConn to an enum with H2/H1 variants, and make new_connection() read ALPN to choose the right variant. This wires the dispatch without implementing H1 execution (FEAT-002 does that). After this FEAT the codebase compiles with the H1 arm calling a stub that returns unimplemented!().",
+  "status": "completed",
+  "steps": [
+    "Add `httparse = \"1\"` to [dependencies] in crates/client/Cargo.toml. This is the only new dependency needed — we write the H1 send/recv manually using tokio::io, and use httparse only for parsing the status line and headers.",
+    "In crates/client/src/lib.rs, add `use tokio::io::{AsyncReadExt, AsyncWriteExt};` to the existing use block (already used implicitly, make explicit for H1).",
+    "Replace the `PooledConn` private struct with an enum:\n```rust\nenum PooledConn {\n    H2 {\n        conn: Connection<TlsStream>,\n        encoder: ChromeEncoder,\n        decoder: StandardDecoder,\n    },\n    H1 {\n        stream: TlsStream,\n    },\n}\n```\nAll usages of the struct fields will now fail to compile — that is expected; the next steps fix them.",
+    "Rewrite `new_connection()` (private async fn on `RequestBuilder`) to inspect ALPN after the TLS handshake:\n```rust\nasync fn new_connection(&self, host: &str, port: u16) -> Result<PooledConn, ClientError> {\n    let tcp = if let Some(ref proxy_config) = self.client.proxy {\n        establish_tunnel(proxy_config, host, port).await?\n    } else {\n        TcpStream::connect((host, port)).await?\n    };\n    let tls_stream = self.client.tls.connect(host, port, tcp).await?;\n    // Check negotiated ALPN — idmsa.apple.com returns http/1.1\n    let alpn = tls_stream.ssl().selected_alpn_protocol();\n    if alpn == Some(b\"h2\") {\n        let conn = Connection::handshake(tls_stream).await?;\n        let encoder = ChromeEncoder::new(self.client.hpack_table_size);\n        let decoder = StandardDecoder::new(self.client.hpack_table_size);\n        Ok(PooledConn::H2 { conn, encoder, decoder })\n    } else {\n        // http/1.1 or no ALPN — return the raw TLS stream for HTTP/1.1\n        Ok(PooledConn::H1 { stream: tls_stream })\n    }\n}```",
+    "Fix the two use sites of the old `PooledConn` struct fields in `execute_single_with_method()`:\n  a) The stale connection fallback: `if let Some(mut entry) = pooled { match entry { PooledConn::H2 { ref mut conn, ref mut encoder, ref mut decoder } => { ... old H2 send_request ... } PooledConn::H1 { .. } => unimplemented!(\"H1 pool reuse\") } }`\n  b) The `self.client.pool.lock().await.insert(pool_key, entry)` — entry is now a `PooledConn` enum so no struct literal construction needed; just insert the value.\n  For the H1 arm in the execute dispatch, call `unimplemented!(\"H1 execute — see FEAT-002\")` as a temporary stub.",
+    "Add `H1` error variant to `ClientError` for use in H1 execution:\n```rust\n#[error(\"h1: {0}\")]\nH1(String),\n```\nThis covers parse errors and protocol errors in the H1 path."
+  ],
+  "acceptance_criteria": [
+    "cargo build -p rusthttp succeeds with 0 errors (the unimplemented!() stub is dead code until FEAT-002 completes but the code must compile)",
+    "cargo test -p rusthttp — all pre-existing tests pass (H2 path unchanged)",
+    "new_connection() dispatches to PooledConn::H1 when ALPN is http/1.1 or None, and to PooledConn::H2 when ALPN is h2"
+  ],
+  "verification": [
+    "cd C:\\Users\\Dan Li\\.cargo\\git\\checkouts\\rusthttp-c4c5c4911e7b70c8\\d70a526 && cargo build -p rusthttp 2>&1 | Select-String 'error' -- must return 0 lines",
+    "cargo test -p rusthttp -- --test-output immediate 2>&1 | tail -10 -- must show 'test result: ok'"
+  ],
+  "blocked_reason": null,
+  "findings": "Pre-existing test compilation errors fixed alongside FEAT-001: (1) integration.rs called .chrome() with 0 args but API requires version param — fixed to .chrome(None); (2) resp.text().expect() failed because text() returns String not Result — fixed to resp.text() + &body for serde_json::from_str. PooledConn enum dispatch uses move destructuring (not ref mut) to avoid borrow-checker issues when reconstructing the enum after send_request. ALPN check uses let is_h2: bool to avoid lifetime issue with Option<&[u8]> borrow of tls_stream."
+}

@@ -19,7 +19,7 @@ const EXPECTED_WINDOW_UPDATE: &str = "15663105";
 #[ignore] // requires network access — run with `cargo test -- --ignored`
 async fn test_tls_fingerprint_peet_ws() {
     let client = Client::builder()
-        .chrome()
+        .chrome(None)
         .build()
         .expect("failed to build client");
 
@@ -31,12 +31,12 @@ async fn test_tls_fingerprint_peet_ws() {
 
     assert_eq!(resp.status(), 200, "unexpected status code");
 
-    let body = resp.text().expect("body not utf8");
+    let body = resp.text();
     println!("tls.peet.ws response:\n{}", body);
 
     // Parse JSON response
     let json: serde_json::Value =
-        serde_json::from_str(body).expect("failed to parse response JSON");
+        serde_json::from_str(&body).expect("failed to parse response JSON");
 
     // Check TLS fingerprint exists
     let ja4 = json.get("tls")
@@ -67,7 +67,7 @@ async fn test_tls_fingerprint_peet_ws() {
 #[ignore]
 async fn test_basic_https_request() {
     let client = Client::builder()
-        .chrome()
+        .chrome(None)
         .build()
         .expect("failed to build client");
 
@@ -79,7 +79,7 @@ async fn test_basic_https_request() {
         .expect("request failed");
 
     assert_eq!(resp.status(), 200);
-    let body = resp.text().expect("body not utf8");
+    let body = resp.text();
     assert!(body.contains("rusthttp"), "custom header not reflected");
 }
 
@@ -96,7 +96,7 @@ async fn test_proxy_connection() {
     };
 
     let client = Client::builder()
-        .chrome()
+        .chrome(None)
         .proxy(&proxy_url)
         .build()
         .expect("failed to build client");
@@ -108,7 +108,7 @@ async fn test_proxy_connection() {
         .expect("proxy request failed");
 
     assert_eq!(resp.status(), 200);
-    let body = resp.text().expect("body not utf8");
+    let body = resp.text();
     println!("IP via proxy: {}", body);
     // Should return the proxy's IP, not ours
     assert!(body.contains("origin"), "response should contain origin IP");

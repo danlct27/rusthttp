@@ -8,6 +8,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use thiserror::Error;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use url::Url;
 
@@ -23,12 +24,17 @@ use h2::hpack::{ChromeEncoder, StandardDecoder};
 use proxy::{establish_tunnel, ProxyConfig};
 use tls::{TlsConnector, TlsProfile};
 
-// Pool entry: H2 connection + HPACK state for a single host:port
+// Pool entry: H2 or H1 connection for a single host:port
 type TlsStream = tokio_boring::SslStream<TcpStream>;
-struct PooledConn {
-    conn: Connection<TlsStream>,
-    encoder: ChromeEncoder,
-    decoder: StandardDecoder,
+enum PooledConn {
+    H2 {
+        conn: Connection<TlsStream>,
+        encoder: ChromeEncoder,
+        decoder: StandardDecoder,
+    },
+    H1 {
+        stream: TlsStream,
+    },
 }
 
 /// Errors from the client layer.
@@ -44,6 +50,8 @@ pub enum ClientError {
     InvalidUrl(String),
     #[error("io: {0}")]
     Io(#[from] std::io::Error),
+    #[error("h1: {0}")]
+    H1(String),
 }
 
 /// HTTP status code wrapper with helper methods (matches rquest API).
@@ -648,7 +656,7 @@ impl<'a> RequestBuilder<'a> {
             h2_headers.push((k.clone(), v.clone()));
         }
 
-        // Step 5: Send request via H2 — reuse pooled connection or create new
+        // Step 5: Send request — reuse pooled connection or create new
         let body_to_send = if method == "GET" || method == "HEAD" {
             None
         } else {
@@ -656,21 +664,35 @@ impl<'a> RequestBuilder<'a> {
         };
 
         // Try pooled connection first, fallback to new on error
-        let (h2_resp, mut entry) = if let Some(mut entry) = pooled {
-            match entry.conn.send_request(&h2_headers, body_to_send, &mut entry.encoder, &mut entry.decoder).await {
-                Ok(resp) => (resp, entry),
-                Err(_) => {
-                    // Pooled conn stale/dead — create fresh
-                    let entry = self.new_connection(host, port).await?;
-                    let mut e = entry;
-                    let resp = e.conn.send_request(&h2_headers, body_to_send, &mut e.encoder, &mut e.decoder).await?;
-                    (resp, e)
+        let (h2_resp, entry) = if let Some(entry) = pooled {
+            match entry {
+                PooledConn::H2 { mut conn, mut encoder, mut decoder } => {
+                    match conn.send_request(&h2_headers, body_to_send, &mut encoder, &mut decoder).await {
+                        Ok(resp) => (resp, PooledConn::H2 { conn, encoder, decoder }),
+                        Err(_) => {
+                            // Pooled conn stale/dead — create fresh
+                            let fresh = self.new_connection(host, port).await?;
+                            match fresh {
+                                PooledConn::H2 { mut conn, mut encoder, mut decoder } => {
+                                    let resp = conn.send_request(&h2_headers, body_to_send, &mut encoder, &mut decoder).await?;
+                                    (resp, PooledConn::H2 { conn, encoder, decoder })
+                                }
+                                PooledConn::H1 { .. } => unimplemented!("H1 pool reuse"),
+                            }
+                        }
+                    }
                 }
+                PooledConn::H1 { .. } => unimplemented!("H1 pool reuse"),
             }
         } else {
-            let mut entry = self.new_connection(host, port).await?;
-            let resp = entry.conn.send_request(&h2_headers, body_to_send, &mut entry.encoder, &mut entry.decoder).await?;
-            (resp, entry)
+            let fresh = self.new_connection(host, port).await?;
+            match fresh {
+                PooledConn::H2 { mut conn, mut encoder, mut decoder } => {
+                    let resp = conn.send_request(&h2_headers, body_to_send, &mut encoder, &mut decoder).await?;
+                    (resp, PooledConn::H2 { conn, encoder, decoder })
+                }
+                PooledConn::H1 { .. } => unimplemented!("H1 execute — see FEAT-002"),
+            }
         };
 
         // Return connection to pool for reuse
@@ -717,7 +739,8 @@ impl<'a> RequestBuilder<'a> {
         })
     }
 
-    /// Create a fresh TCP → TLS → H2 connection for the given host:port.
+    /// Create a fresh TCP → TLS connection for the given host:port.
+    /// Returns H2 or H1 based on ALPN negotiation.
     async fn new_connection(&self, host: &str, port: u16) -> Result<PooledConn, ClientError> {
         let tcp = if let Some(ref proxy_config) = self.client.proxy {
             establish_tunnel(proxy_config, host, port).await?
@@ -725,9 +748,16 @@ impl<'a> RequestBuilder<'a> {
             TcpStream::connect((host, port)).await?
         };
         let tls_stream = self.client.tls.connect(host, port, tcp).await?;
-        let conn = Connection::handshake(tls_stream).await?;
-        let encoder = ChromeEncoder::new(self.client.hpack_table_size);
-        let decoder = StandardDecoder::new(self.client.hpack_table_size);
-        Ok(PooledConn { conn, encoder, decoder })
+        // Check negotiated ALPN — idmsa.apple.com returns http/1.1
+        let is_h2 = tls_stream.ssl().selected_alpn_protocol() == Some(b"h2");
+        if is_h2 {
+            let conn = Connection::handshake(tls_stream).await?;
+            let encoder = ChromeEncoder::new(self.client.hpack_table_size);
+            let decoder = StandardDecoder::new(self.client.hpack_table_size);
+            Ok(PooledConn::H2 { conn, encoder, decoder })
+        } else {
+            // http/1.1 or no ALPN — return the raw TLS stream for HTTP/1.1
+            Ok(PooledConn::H1 { stream: tls_stream })
+        }
     }
 }
