@@ -258,7 +258,7 @@ impl TlsConnector {
             }
         }
 
-        // ECH GREASE (Encrypted Client Hello) ¡X Chrome 107+ sends a fake ECH extension
+        // ECH GREASE (Encrypted Client Hello) - Chrome 107+ sends a fake ECH extension
         // in every ClientHello to defend against fingerprinting and prime middleboxes.
         // boring 4.22 exposes set_enable_ech_grease() on ConnectConfiguration.
         if self.profile.ech_grease {
