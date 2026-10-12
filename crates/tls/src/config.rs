@@ -277,6 +277,9 @@ pub struct TlsProfile {
     pub grease: bool,
     /// Enable ALPS (Application-Layer Protocol Settings) extension.
     pub alps: bool,
+    /// Protocols to configure ALPS for (subset of alpn_protocols; Chrome = ["h2"]).
+    /// Separate from alpn_protocols — ALPN advertises more protocols than ALPS configures.
+    pub alps_protocols: Vec<String>,
     /// Certificate compression method.
     pub cert_compression: CertCompression,
     /// Minimum TLS version.
@@ -323,6 +326,7 @@ impl TlsProfile {
             signature_algorithms: "ecdsa_secp256r1_sha256:rsa_pss_rsae_sha256:rsa_pkcs1_sha256:ecdsa_secp384r1_sha384:rsa_pss_rsae_sha384:rsa_pkcs1_sha384:rsa_pss_rsae_sha512:rsa_pkcs1_sha512".into(),
             grease: true,
             alps: true,
+            alps_protocols: vec!["h2".into()],
             cert_compression: CertCompression::Brotli,
             min_version: SslVersion::TLS1_2,
             max_version: SslVersion::TLS1_3,
@@ -371,6 +375,7 @@ impl TlsProfile {
             signature_algorithms: "ecdsa_secp256r1_sha256:ecdsa_secp384r1_sha384:ecdsa_secp521r1_sha512:rsa_pss_rsae_sha256:rsa_pss_rsae_sha384:rsa_pss_rsae_sha512:rsa_pkcs1_sha256:rsa_pkcs1_sha384:rsa_pkcs1_sha512:ecdsa_sha1:rsa_pkcs1_sha1".into(),
             grease: false, // Firefox doesn't use GREASE
             alps: false,
+            alps_protocols: vec![],
             cert_compression: CertCompression::None,
             min_version: SslVersion::TLS1_2,
             max_version: SslVersion::TLS1_3,
@@ -416,6 +421,7 @@ impl TlsProfile {
             signature_algorithms: "ecdsa_secp256r1_sha256:rsa_pss_rsae_sha256:rsa_pkcs1_sha256:ecdsa_secp384r1_sha384:rsa_pss_rsae_sha384:rsa_pkcs1_sha384:rsa_pss_rsae_sha512:rsa_pkcs1_sha512:rsa_pkcs1_sha1".into(),
             grease: true,
             alps: false,
+            alps_protocols: vec![],
             cert_compression: CertCompression::Zlib, // Safari uses zlib
             min_version: SslVersion::TLS1_2,
             max_version: SslVersion::TLS1_3,
@@ -491,7 +497,8 @@ impl TlsProfile {
             min_version,
             max_version,
             permute_extensions: tls.grease.enabled, // Chrome permutes when GREASE enabled
-            alpn_protocols: tls.alps.protocols.clone().unwrap_or_else(|| vec!["h2".into(), "http/1.1".into()]),
+            alpn_protocols: vec!["h2".into(), "http/1.1".into()],
+            alps_protocols: tls.alps.protocols.clone().unwrap_or_default(),
             extensions_order: tls.extensions_order.clone(),
         })
     }
@@ -644,6 +651,12 @@ impl TlsProfileBuilder {
     /// Enable or disable ALPS.
     pub fn alps(mut self, enabled: bool) -> Self {
         self.profile.alps = enabled;
+        self
+    }
+
+    /// Set ALPS protocols (the subset of ALPN protocols that get ALPS configured).
+    pub fn alps_protocols(mut self, protocols: Vec<String>) -> Self {
+        self.profile.alps_protocols = protocols;
         self
     }
 

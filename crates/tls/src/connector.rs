@@ -5,6 +5,8 @@
 //! passing the target `host` to `tokio_boring::connect`.
 
 use boring::ssl::{CertificateCompressionAlgorithm, CertificateCompressor, SslConnector, SslMethod, SslVerifyMode};
+use foreign_types::ForeignTypeRef;
+use std::os::raw::{c_int, c_void};
 use tokio::net::TcpStream;
 use tokio_boring::SslStream;
 use tracing::debug;
@@ -217,6 +219,43 @@ impl TlsConnector {
 
         if self.danger_accept_invalid_certs {
             config.set_verify_hostname(false);
+        }
+
+        // ALPS (Application-Layer Protocol Settings) — draft-vvv-tls-alps.
+        // SSL_add_application_settings must be called per-SSL object (not per-context).
+        // Chrome 149 configures ALPS for "h2" with an empty settings payload.
+        if self.profile.alps && !self.profile.alps_protocols.is_empty() {
+            unsafe extern "C" {
+                // BoringSSL ssl.h line ~3006
+                // OPENSSL_EXPORT int SSL_add_application_settings(
+                //     SSL *ssl, const uint8_t *proto, size_t proto_len,
+                //     const uint8_t *settings, size_t settings_len);
+                fn SSL_add_application_settings(
+                    ssl: *mut c_void,
+                    proto: *const u8,
+                    proto_len: usize,
+                    settings: *const u8,
+                    settings_len: usize,
+                ) -> c_int;
+            }
+            for proto in &self.profile.alps_protocols {
+                let ret = unsafe {
+                    SSL_add_application_settings(
+                        config.as_ptr() as *mut c_void,
+                        proto.as_ptr(),
+                        proto.len(),
+                        std::ptr::null(),
+                        0,
+                    )
+                };
+                if ret != 1 {
+                    return Err(TlsError::ConfigMsg(format!(
+                        "SSL_add_application_settings failed for protocol '{}' (ret={})",
+                        proto, ret
+                    )));
+                }
+                debug!(protocol = %proto, "ALPS configured");
+            }
         }
 
         let handshake_timeout = Duration::from_secs(10);
