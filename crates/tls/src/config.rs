@@ -1,4 +1,4 @@
-//! TLS fingerprint configuration — browser profiles.
+//! TLS fingerprint configuration ??browser profiles.
 //!
 //! Supports:
 //! - Preset profiles (Chrome, Firefox, Safari, etc.)
@@ -99,7 +99,7 @@ pub mod cipher_id {
 /// TLS Extension Type IDs used by Chrome 149.
 /// Each constant documents the RFC source and Chrome's usage.
 pub mod extension_type {
-    /// server_name (RFC 6066) — SNI
+    /// server_name (RFC 6066) ??SNI
     pub const SERVER_NAME: u16 = 0;
     /// extended_master_secret (RFC 7627)
     pub const EXTENDED_MASTER_SECRET: u16 = 23;
@@ -215,7 +215,7 @@ pub fn validate_extension_order(extensions: &[String]) {
     // Validate each extension resolves to a known type ID
     for ext in &filtered {
         if extension_type::from_name(ext).is_none() {
-            warn!(extension = %ext, "unknown TLS extension name — not in Chrome 149 set");
+            warn!(extension = %ext, "unknown TLS extension name ??not in Chrome 149 set");
         }
     }
 
@@ -278,8 +278,11 @@ pub struct TlsProfile {
     /// Enable ALPS (Application-Layer Protocol Settings) extension.
     pub alps: bool,
     /// Protocols to configure ALPS for (subset of alpn_protocols; Chrome = ["h2"]).
-    /// Separate from alpn_protocols — ALPN advertises more protocols than ALPS configures.
+    /// Separate from alpn_protocols ??ALPN advertises more protocols than ALPS configures.
     pub alps_protocols: Vec<String>,
+    /// Enable ECH (Encrypted Client Hello) GREASE ??Chrome 107+ sends this to all servers.
+    /// Adds a fake encrypted_client_hello extension to the ClientHello (RFC 9578 / draft).
+    pub ech_grease: bool,
     /// Certificate compression method.
     pub cert_compression: CertCompression,
     /// Minimum TLS version.
@@ -327,6 +330,7 @@ impl TlsProfile {
             grease: true,
             alps: true,
             alps_protocols: vec!["h2".into()],
+            ech_grease: true,
             cert_compression: CertCompression::Brotli,
             min_version: SslVersion::TLS1_2,
             max_version: SslVersion::TLS1_3,
@@ -376,6 +380,7 @@ impl TlsProfile {
             grease: false, // Firefox doesn't use GREASE
             alps: false,
             alps_protocols: vec![],
+            ech_grease: false,
             cert_compression: CertCompression::None,
             min_version: SslVersion::TLS1_2,
             max_version: SslVersion::TLS1_3,

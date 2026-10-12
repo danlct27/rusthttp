@@ -1,4 +1,4 @@
-//! BoringSSL connector — establishes TLS connections with fingerprint config.
+//! BoringSSL connector ??establishes TLS connections with fingerprint config.
 //!
 //! Key: when connecting through a CONNECT proxy, SNI and verify hostname
 //! MUST be set to the TARGET hostname (not the proxy). This is handled by
@@ -15,7 +15,7 @@ use crate::config::{CertCompression, TlsProfile};
 use crate::error::TlsError;
 
 // NOTE: Both Brotli and Zlib certificate decompressors are implemented.
-// Chrome advertises brotli (algorithm ID 2) — servers may select it.
+// Chrome advertises brotli (algorithm ID 2) ??servers may select it.
 
 /// Brotli certificate compressor (decompress only).
 struct BrotliCertCompressor;
@@ -73,7 +73,7 @@ impl CertificateCompressor for ZlibCertCompressor {
 #[derive(Debug, Clone)]
 pub struct TlsConnector {
     profile: TlsProfile,
-    /// Skip certificate verification (dangerous — testing only).
+    /// Skip certificate verification (dangerous ??testing only).
     danger_accept_invalid_certs: bool,
 }
 
@@ -112,7 +112,7 @@ impl TlsConnector {
         builder.set_min_proto_version(Some(self.profile.min_version))?;
         builder.set_max_proto_version(Some(self.profile.max_version))?;
 
-        // Cipher suites — convert IANA names to BoringSSL/OpenSSL names.
+        // Cipher suites ??convert IANA names to BoringSSL/OpenSSL names.
         // TLS 1.3 ciphers are auto-enabled in BoringSSL, but we set them via
         // set_ciphersuites() style names. TLS 1.2 ciphers need OpenSSL names.
         let openssl_names: Vec<&str> = self.profile.cipher_suites.iter()
@@ -133,7 +133,7 @@ impl TlsConnector {
                 ))
             })?;
 
-        // Supported groups (curves + PQ) — normalize names and fallback without PQ
+        // Supported groups (curves + PQ) ??normalize names and fallback without PQ
         let normalized_groups: Vec<String> = self.profile.supported_groups.iter()
             .map(|s| normalize_curve_name(s))
             .collect();
@@ -155,7 +155,7 @@ impl TlsConnector {
             })?;
         }
 
-        // ALPN — encode as length-prefixed bytes
+        // ALPN ??encode as length-prefixed bytes
         let alpn_bytes = encode_alpn(&self.profile.alpn_protocols)?;
         builder.set_alpn_protos(&alpn_bytes).map_err(|e| {
             TlsError::ConfigMsg(format!("failed to set ALPN protocols: {}", e))
@@ -169,17 +169,17 @@ impl TlsConnector {
             builder.set_verify(SslVerifyMode::PEER);
         }
 
-        // GREASE (RFC 8701) — safe wrapper in boring v4
+        // GREASE (RFC 8701) ??safe wrapper in boring v4
         if self.profile.grease {
             builder.set_grease_enabled(true);
         }
 
-        // Extension permutation — safe wrapper in boring v4
+        // Extension permutation ??safe wrapper in boring v4
         if self.profile.permute_extensions {
             builder.set_permute_extensions(true);
         }
 
-        // Certificate compression — register appropriate decompressor
+        // Certificate compression ??register appropriate decompressor
         match self.profile.cert_compression {
             CertCompression::Brotli => {
                 builder.add_certificate_compression_algorithm(BrotliCertCompressor)?;
@@ -201,7 +201,7 @@ impl TlsConnector {
 
     /// Perform a TLS handshake over an established TCP stream.
     ///
-    /// `host` must be the **target** hostname (not the proxy) — this is used for
+    /// `host` must be the **target** hostname (not the proxy) ??this is used for
     /// both SNI and certificate verification.
     pub async fn connect(
         &self,
@@ -221,7 +221,7 @@ impl TlsConnector {
             config.set_verify_hostname(false);
         }
 
-        // ALPS (Application-Layer Protocol Settings) — draft-vvv-tls-alps.
+        // ALPS (Application-Layer Protocol Settings) ??draft-vvv-tls-alps.
         // SSL_add_application_settings must be called per-SSL object (not per-context).
         // Chrome 149 configures ALPS for "h2" with an empty settings payload.
         if self.profile.alps && !self.profile.alps_protocols.is_empty() {
@@ -258,6 +258,13 @@ impl TlsConnector {
             }
         }
 
+        // ECH GREASE (Encrypted Client Hello) �X Chrome 107+ sends a fake ECH extension
+        // in every ClientHello to defend against fingerprinting and prime middleboxes.
+        // boring 4.22 exposes set_enable_ech_grease() on ConnectConfiguration.
+        if self.profile.ech_grease {
+            config.set_enable_ech_grease(true);
+            debug!("ECH GREASE enabled");
+        }
         let handshake_timeout = Duration::from_secs(10);
         let stream = timeout(handshake_timeout, tokio_boring::connect(config, host, tcp_stream))
             .await
@@ -278,7 +285,7 @@ impl TlsConnector {
 /// Encode ALPN protocols as length-prefixed byte sequence per RFC 7301.
 ///
 /// Each protocol is encoded as: `<length_byte><protocol_bytes>`.
-/// Example: `["h2", "http/1.1"]` → `b"\x02h2\x08http/1.1"`.
+/// Example: `["h2", "http/1.1"]` ??`b"\x02h2\x08http/1.1"`.
 ///
 /// This is the wire format expected by `SslConnectorBuilder::set_alpn_protos`.
 fn encode_alpn(protocols: &[String]) -> Result<Vec<u8>, TlsError> {
@@ -330,7 +337,7 @@ fn iana_to_openssl(iana: &str) -> Option<&'static str> {
         "TLS_RSA_WITH_AES_256_GCM_SHA384" => Some("AES256-GCM-SHA384"),
         "TLS_RSA_WITH_AES_128_CBC_SHA" => Some("AES128-SHA"),
         "TLS_RSA_WITH_AES_256_CBC_SHA" => Some("AES256-SHA"),
-        // Unknown — skip with warning
+        // Unknown ??skip with warning
         _ => {
             tracing::warn!(cipher = %iana, "unknown cipher suite name, skipping");
             None
