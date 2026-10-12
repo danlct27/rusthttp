@@ -8,7 +8,6 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use thiserror::Error;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use url::Url;
 
@@ -573,7 +572,7 @@ impl<'a> RequestBuilder<'a> {
         let pool_key = format!("{}:{}", host, port);
 
         // Try to get a pooled connection
-        let mut pooled = self.client.pool.lock().await.remove(&pool_key);
+        let pooled = self.client.pool.lock().await.remove(&pool_key);
 
         // Step 4: Build headers (before connection — no borrow issues)
         let path = match url.query() {
@@ -588,7 +587,7 @@ impl<'a> RequestBuilder<'a> {
 
         let mut h2_headers: Vec<(String, String)> = vec![
             (":method".into(), method.to_string()),
-            (":authority".into(), authority),
+            (":authority".into(), authority.clone()),
             (":scheme".into(), "https".into()),
             (":path".into(), path.clone()),
         ];
@@ -664,39 +663,59 @@ impl<'a> RequestBuilder<'a> {
         };
 
         // Try pooled connection first, fallback to new on error
-        let (h2_resp, entry) = if let Some(entry) = pooled {
+        let (h2_resp, pool_entry) = if let Some(entry) = pooled {
             match entry {
                 PooledConn::H2 { mut conn, mut encoder, mut decoder } => {
                     match conn.send_request(&h2_headers, body_to_send, &mut encoder, &mut decoder).await {
-                        Ok(resp) => (resp, PooledConn::H2 { conn, encoder, decoder }),
+                        Ok(resp) => (resp, Some(PooledConn::H2 { conn, encoder, decoder })),
                         Err(_) => {
                             // Pooled conn stale/dead — create fresh
                             let fresh = self.new_connection(host, port).await?;
                             match fresh {
                                 PooledConn::H2 { mut conn, mut encoder, mut decoder } => {
                                     let resp = conn.send_request(&h2_headers, body_to_send, &mut encoder, &mut decoder).await?;
-                                    (resp, PooledConn::H2 { conn, encoder, decoder })
+                                    (resp, Some(PooledConn::H2 { conn, encoder, decoder }))
                                 }
-                                PooledConn::H1 { .. } => unimplemented!("H1 pool reuse"),
+                                PooledConn::H1 { mut stream } => {
+                                    let (resp, keep_alive) = execute_h1(
+                                        &mut stream, method, &path, &authority, &h2_headers, body_to_send,
+                                    ).await?;
+                                    let pe = if keep_alive { Some(PooledConn::H1 { stream }) } else { None };
+                                    (resp, pe)
+                                }
                             }
                         }
                     }
                 }
-                PooledConn::H1 { .. } => unimplemented!("H1 pool reuse"),
+                PooledConn::H1 { mut stream } => {
+                    let (resp, keep_alive) = execute_h1(
+                        &mut stream, method, &path, &authority, &h2_headers, body_to_send,
+                    ).await?;
+                    let pe = if keep_alive { Some(PooledConn::H1 { stream }) } else { None };
+                    (resp, pe)
+                }
             }
         } else {
             let fresh = self.new_connection(host, port).await?;
             match fresh {
                 PooledConn::H2 { mut conn, mut encoder, mut decoder } => {
                     let resp = conn.send_request(&h2_headers, body_to_send, &mut encoder, &mut decoder).await?;
-                    (resp, PooledConn::H2 { conn, encoder, decoder })
+                    (resp, Some(PooledConn::H2 { conn, encoder, decoder }))
                 }
-                PooledConn::H1 { .. } => unimplemented!("H1 execute — see FEAT-002"),
+                PooledConn::H1 { mut stream } => {
+                    let (resp, keep_alive) = execute_h1(
+                        &mut stream, method, &path, &authority, &h2_headers, body_to_send,
+                    ).await?;
+                    let pe = if keep_alive { Some(PooledConn::H1 { stream }) } else { None };
+                    (resp, pe)
+                }
             }
         };
 
-        // Return connection to pool for reuse
-        self.client.pool.lock().await.insert(pool_key, entry);
+        // Return connection to pool for reuse (H1 skips when Connection: close)
+        if let Some(entry) = pool_entry {
+            self.client.pool.lock().await.insert(pool_key, entry);
+        }
 
         // Step 6: Parse status from response headers
         let status_code = h2_resp.headers.iter()
@@ -759,5 +778,256 @@ impl<'a> RequestBuilder<'a> {
             // http/1.1 or no ALPN — return the raw TLS stream for HTTP/1.1
             Ok(PooledConn::H1 { stream: tls_stream })
         }
+    }
+}
+
+// ─── HTTP/1.1 helpers ────────────────────────────────────────────────────────
+
+/// Find the end of HTTP headers (`\r\n\r\n`) and return the index of the last `\n`.
+fn find_header_end(buf: &[u8]) -> Option<usize> {
+    buf.windows(4)
+        .position(|w| w == b"\r\n\r\n")
+        .map(|p| p + 3) // index of the final `\n`
+}
+
+/// Execute a single HTTP/1.1 request over an existing TLS stream.
+///
+/// `headers` contains the H2-style pseudo-headers (`:method`, `:path`, etc.) plus
+/// regular headers.  We strip pseudo-headers and derive the real H1 request line.
+///
+/// Returns `(response, keep_alive)` where `keep_alive` indicates whether the
+/// connection can be returned to the pool.
+async fn execute_h1(
+    stream: &mut TlsStream,
+    method: &str,
+    path: &str,
+    authority: &str,
+    headers: &[(String, String)],
+    body: Option<&[u8]>,
+) -> Result<(h2::connection::Response, bool), ClientError> {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    // ── Build request ────────────────────────────────────────────────────────
+    let mut req = format!("{} {} HTTP/1.1\r\n", method, path);
+    req.push_str(&format!("Host: {}\r\n", authority));
+
+    // Body length header (avoid sending for 0-byte bodies from GET/HEAD)
+    if let Some(b) = body {
+        if !b.is_empty() {
+            req.push_str(&format!("Content-Length: {}\r\n", b.len()));
+        }
+    }
+
+    // Append regular headers (skip H2 pseudo-headers and hop-by-hop headers
+    // that don't make sense over HTTP/1.1-inside-TLS)
+    for (k, v) in headers {
+        if k.starts_with(':') {
+            continue; // skip :method, :path, :authority, :scheme
+        }
+        let kl = k.to_lowercase();
+        // Transfer-Encoding is meaningless translating H2 → H1; skip it.
+        if kl == "transfer-encoding" {
+            continue;
+        }
+        req.push_str(&format!("{}: {}\r\n", k, v));
+    }
+
+    req.push_str("\r\n");
+
+    // Write headers
+    stream.write_all(req.as_bytes()).await?;
+
+    // Write body (only for non-GET/HEAD)
+    if let Some(b) = body {
+        if !b.is_empty() {
+            stream.write_all(b).await?;
+        }
+    }
+    stream.flush().await?;
+
+    // ── Read response headers ────────────────────────────────────────────────
+    let mut buf: Vec<u8> = Vec::with_capacity(4096);
+    let header_end;
+    loop {
+        let mut tmp = [0u8; 4096];
+        let n = stream.read(&mut tmp).await?;
+        if n == 0 {
+            return Err(ClientError::H1(
+                "connection closed before response headers complete".into(),
+            ));
+        }
+        buf.extend_from_slice(&tmp[..n]);
+        if let Some(pos) = find_header_end(&buf) {
+            header_end = pos;
+            break;
+        }
+        if buf.len() > 131_072 {
+            return Err(ClientError::H1("response headers exceed 128 KB limit".into()));
+        }
+    }
+
+    // ── Parse status + headers with httparse ─────────────────────────────────
+    let mut header_storage = [httparse::EMPTY_HEADER; 128];
+    let mut parsed = httparse::Response::new(&mut header_storage);
+    parsed
+        .parse(&buf[..header_end + 1])
+        .map_err(|e| ClientError::H1(format!("httparse: {}", e)))?;
+
+    let status = parsed.code.unwrap_or(0);
+
+    // Build response headers list (including synthetic :status for H2-compat)
+    let mut resp_headers: Vec<(String, String)> = Vec::with_capacity(parsed.headers.len() + 1);
+    resp_headers.push((":status".into(), status.to_string()));
+
+    let mut content_length: Option<usize> = None;
+    let mut is_chunked = false;
+    let mut connection_close = false;
+
+    for h in parsed.headers.iter() {
+        let name = h.name.to_lowercase();
+        let value = String::from_utf8_lossy(h.value).into_owned();
+        if name == "content-length" {
+            content_length = value.trim().parse().ok();
+        }
+        if name == "transfer-encoding" && value.to_lowercase().contains("chunked") {
+            is_chunked = true;
+        }
+        if name == "connection" && value.to_lowercase().contains("close") {
+            connection_close = true;
+        }
+        resp_headers.push((h.name.to_string(), value));
+    }
+
+    // ── Read body ────────────────────────────────────────────────────────────
+    // Bytes already read past the header boundary
+    let body_start = header_end + 1;
+    let mut body_buf: Vec<u8> = buf[body_start..].to_vec();
+
+    let body_bytes: Vec<u8> = if is_chunked {
+        read_chunked_body(stream, body_buf).await?
+    } else if let Some(len) = content_length {
+        // Read until we have `len` bytes
+        while body_buf.len() < len {
+            let mut tmp = [0u8; 8192];
+            let n = stream.read(&mut tmp).await?;
+            if n == 0 {
+                break; // server closed before sending full body
+            }
+            body_buf.extend_from_slice(&tmp[..n]);
+        }
+        body_buf.truncate(len);
+        body_buf
+    } else {
+        // No Content-Length and not chunked.
+        // HEAD, 204, 304 → no body by spec.
+        if method == "HEAD" || status == 204 || status == 304 {
+            Vec::new()
+        } else {
+            // Read until connection close.
+            loop {
+                let mut tmp = [0u8; 8192];
+                let n = stream.read(&mut tmp).await?;
+                if n == 0 {
+                    break;
+                }
+                body_buf.extend_from_slice(&tmp[..n]);
+            }
+            connection_close = true; // can't reuse after read-until-close
+            body_buf
+        }
+    };
+
+    Ok((
+        h2::connection::Response {
+            headers: resp_headers,
+            body: bytes::Bytes::from(body_bytes),
+        },
+        !connection_close,
+    ))
+}
+
+/// Read a chunked Transfer-Encoding body until the terminal zero-size chunk.
+async fn read_chunked_body(
+    stream: &mut TlsStream,
+    initial: Vec<u8>,
+) -> Result<Vec<u8>, ClientError> {
+    use tokio::io::AsyncReadExt;
+
+    let mut raw = initial;
+    let mut output: Vec<u8> = Vec::new();
+
+    loop {
+        // Ensure we have enough data to parse a chunk header (size\r\n)
+        // Keep reading until we find \r\n for the chunk size line.
+        let chunk_size = loop {
+            if let Some(nl) = raw.iter().position(|&b| b == b'\n') {
+                let line = String::from_utf8_lossy(&raw[..nl])
+                    .trim_end_matches('\r')
+                    .trim()
+                    .to_string();
+                raw.drain(..=nl);
+                // Chunk size is hex, may have extensions after ';'
+                let hex_part = line.split(';').next().unwrap_or("").trim();
+                let sz = usize::from_str_radix(hex_part, 16)
+                    .map_err(|_| ClientError::H1(format!("invalid chunk size: {:?}", hex_part)))?;
+                break sz;
+            }
+            // Need more data
+            let mut tmp = [0u8; 4096];
+            let n = stream.read(&mut tmp).await?;
+            if n == 0 {
+                return Err(ClientError::H1("connection closed inside chunked body".into()));
+            }
+            raw.extend_from_slice(&tmp[..n]);
+        };
+
+        if chunk_size == 0 {
+            break; // terminal chunk
+        }
+
+        // Read chunk_size bytes + trailing \r\n
+        let total_needed = chunk_size + 2;
+        while raw.len() < total_needed {
+            let mut tmp = [0u8; 8192];
+            let n = stream.read(&mut tmp).await?;
+            if n == 0 {
+                return Err(ClientError::H1("connection closed inside chunk data".into()));
+            }
+            raw.extend_from_slice(&tmp[..n]);
+        }
+        output.extend_from_slice(&raw[..chunk_size]);
+        raw.drain(..total_needed); // consume data + \r\n
+    }
+
+    Ok(output)
+}
+
+#[cfg(test)]
+mod h1_tests {
+    use super::find_header_end;
+
+    #[test]
+    fn test_find_header_end_basic() {
+        let input = b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nhello";
+        let pos = find_header_end(input).expect("should find header end");
+        // The \r\n\r\n starts at offset 36; the last \n is at offset 39.
+        assert_eq!(&input[pos + 1..], b"hello");
+    }
+
+    #[test]
+    fn test_find_header_end_no_body() {
+        let input = b"HTTP/1.1 204 No Content\r\n\r\n";
+        assert!(find_header_end(input).is_some());
+    }
+
+    #[test]
+    fn test_find_header_end_absent() {
+        let input = b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\n";
+        assert!(find_header_end(input).is_none());
+    }
+
+    #[test]
+    fn test_find_header_end_empty() {
+        assert!(find_header_end(b"").is_none());
     }
 }
