@@ -180,6 +180,13 @@ impl<T: AsyncRead + AsyncWrite + Unpin> Connection<T> {
         }
 
         let stream_id = self.stream_ids.next_id()?;
+        // Treat empty body the same as absent body: HEADERS frame carries END_STREAM flag,
+        // no DATA frame is needed. This avoids PROTOCOL_ERROR on servers that expect
+        // END_STREAM before receiving data (e.g. Apple secure{N}.store.apple.com).
+        let body = match body {
+            Some(b) if b.is_empty() => None,
+            other => other,
+        };
         let end_stream = body.is_none();
 
         // Track stream (create before sending so flow control works)
