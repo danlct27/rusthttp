@@ -277,7 +277,10 @@ impl TlsConnector {
                 detail: e.to_string(),
             })?;
 
-        debug!(host, "tls handshake complete");
+        let negotiated = stream.ssl().selected_alpn_protocol()
+            .map(|p| String::from_utf8_lossy(p).to_string())
+            .unwrap_or_else(|| "none".to_string());
+        debug!(host, negotiated_alpn = %negotiated, "tls handshake complete");
         Ok(stream)
     }
 }
