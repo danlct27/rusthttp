@@ -427,6 +427,7 @@ impl TlsProfile {
             grease: true,
             alps: false,
             alps_protocols: vec![],
+            ech_grease: false, // Safari does not send ECH GREASE
             cert_compression: CertCompression::Zlib, // Safari uses zlib
             min_version: SslVersion::TLS1_2,
             max_version: SslVersion::TLS1_3,
@@ -504,6 +505,7 @@ impl TlsProfile {
             permute_extensions: tls.grease.enabled, // Chrome permutes when GREASE enabled
             alpn_protocols: vec!["h2".into(), "http/1.1".into()],
             alps_protocols: tls.alps.protocols.clone().unwrap_or_default(),
+            ech_grease: false, // JSON profiles don't set ECH GREASE yet; set via builder
             extensions_order: tls.extensions_order.clone(),
         })
     }
