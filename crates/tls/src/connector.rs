@@ -283,6 +283,28 @@ impl TlsConnector {
         debug!(host, negotiated_alpn = %negotiated, "tls handshake complete");
         Ok(stream)
     }
+
+    /// Perform a TLS handshake over an established TCP stream, advertising **only**
+    /// `"http/1.1"` in ALPN.
+    ///
+    /// This forces HTTP/1.1 regardless of whether the server supports HTTP/2.
+    /// Mirrors Go's `azuretls.Request{ForceHTTP1: true}` used for the Apple
+    /// authx endpoint (`/shop/signIn/idms/authx`) which requires HTTP/1.1.
+    pub async fn connect_h1_only(
+        &self,
+        host: &str,
+        port: u16,
+        tcp_stream: TcpStream,
+    ) -> Result<SslStream<TcpStream>, TlsError> {
+        // Clone self and override ALPN to http/1.1 only so the server
+        // negotiates HTTP/1.1 even if it supports HTTP/2.
+        let mut h1_connector = self.clone();
+        h1_connector.profile.alpn_protocols = vec!["http/1.1".to_string()];
+        // ALPS is only meaningful for h2; disable it for the h1 path.
+        h1_connector.profile.alps = false;
+        h1_connector.profile.alps_protocols = vec![];
+        h1_connector.connect(host, port, tcp_stream).await
+    }
 }
 
 /// Encode ALPN protocols as length-prefixed byte sequence per RFC 7301.

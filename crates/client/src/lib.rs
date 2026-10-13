@@ -248,6 +248,7 @@ impl Client {
             url: url.into(),
             headers: Vec::new(),
             body: None,
+            force_http1: false,
         }
     }
 
@@ -259,6 +260,7 @@ impl Client {
             url: url.into(),
             headers: Vec::new(),
             body: None,
+            force_http1: false,
         }
     }
 
@@ -270,6 +272,7 @@ impl Client {
             url: url.into(),
             headers: Vec::new(),
             body: None,
+            force_http1: false,
         }
     }
 
@@ -281,6 +284,7 @@ impl Client {
             url: url.into(),
             headers: Vec::new(),
             body: None,
+            force_http1: false,
         }
     }
 
@@ -292,6 +296,7 @@ impl Client {
             url: url.into(),
             headers: Vec::new(),
             body: None,
+            force_http1: false,
         }
     }
 }
@@ -493,6 +498,10 @@ pub struct RequestBuilder<'a> {
     url: String,
     headers: Vec<(String, String)>,
     body: Option<Vec<u8>>,
+    /// Force HTTP/1.1 by using HTTP/1.1-only ALPN for this request.
+    /// Mirrors Go's `azuretls.Request{ForceHTTP1: true}`.
+    /// Used for endpoints that require HTTP/1.1 (e.g. Apple authx).
+    force_http1: bool,
 }
 
 impl<'a> RequestBuilder<'a> {
@@ -513,6 +522,16 @@ impl<'a> RequestBuilder<'a> {
     /// Set the request body (accepts String, Vec<u8>, &[u8], etc).
     pub fn body(mut self, data: impl Into<Vec<u8>>) -> Self {
         self.body = Some(data.into());
+        self
+    }
+
+    /// Force HTTP/1.1 for this request by using HTTP/1.1-only ALPN.
+    ///
+    /// Mirrors Go's `azuretls.Request{ForceHTTP1: true}`.
+    /// Use for endpoints that require HTTP/1.1 even when the server supports HTTP/2,
+    /// such as Apple's `authx` sign-in endpoint on `secure{N}.store.apple.com`.
+    pub fn force_http1(mut self) -> Self {
+        self.force_http1 = true;
         self
     }
 
@@ -671,6 +690,47 @@ impl<'a> RequestBuilder<'a> {
             self.body.as_deref()
         };
 
+        // ForceHTTP1 fast-path: bypass pool, create a fresh H1-only TLS connection.
+        // Mirrors Go's azuretls.Request{ForceHTTP1: true}.
+        // Used for Apple authx (/shop/signIn/idms/authx) which requires HTTP/1.1.
+        if self.force_http1 {
+            let mut stream = self.new_connection_h1_only(host, port).await?;
+            let (h1_resp, _keep_alive) = execute_h1(
+                &mut stream, method, &path, &authority, &h2_headers, body_to_send,
+            ).await?;
+            // Convert inner response → client Response (same as normal path below)
+            let status_code = h1_resp.headers.iter()
+                .find(|(k, _)| k == ":status")
+                .and_then(|(_, v)| v.parse::<u16>().ok())
+                .unwrap_or(0);
+            let headers: Vec<(String, String)> = h1_resp.headers.into_iter()
+                .filter(|(k, _)| !k.starts_with(':'))
+                .collect();
+            if let Some(ref jar) = self.client.cookie_jar {
+                for (k, v) in &headers {
+                    if k.to_lowercase() == "set-cookie" {
+                        jar.add_cookie_str(v, &url);
+                    }
+                }
+            } else {
+                for (k, v) in &headers {
+                    if k.to_lowercase() == "set-cookie" {
+                        if v.len() > 4096 { continue; }
+                        if let Some(cookie_part) = v.split(';').next() {
+                            if let Some((name, value)) = cookie_part.split_once('=') {
+                                if let Ok(mut jar) = self.client.cookies.lock() {
+                                    jar.entry(host.to_string())
+                                        .or_default()
+                                        .push((name.trim().to_string(), value.trim().to_string()));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            return Ok(Response { status_code, headers, body: h1_resp.body });
+        }
+
         // Try pooled connection first, fallback to new on error
         let (h2_resp, pool_entry) = if let Some(entry) = pooled {
             match entry {
@@ -787,6 +847,17 @@ impl<'a> RequestBuilder<'a> {
             // http/1.1 or no ALPN — return the raw TLS stream for HTTP/1.1
             Ok(PooledConn::H1 { stream: tls_stream })
         }
+    }
+
+    /// Create a fresh HTTP/1.1 connection by advertising only "http/1.1" in ALPN.
+    /// Returns the raw TLS stream ready for HTTP/1.1 (execute_h1).
+    async fn new_connection_h1_only(&self, host: &str, port: u16) -> Result<TlsStream, ClientError> {
+        let tcp = if let Some(ref proxy_config) = self.client.proxy {
+            establish_tunnel(proxy_config, host, port).await?
+        } else {
+            TcpStream::connect((host, port)).await?
+        };
+        Ok(self.client.tls.connect_h1_only(host, port, tcp).await?)
     }
 }
 
