@@ -913,8 +913,17 @@ async fn execute_h1(
     req.push_str(&format!("Host: {}\r\n", authority));
 
     // Compute body length for Content-Length (added AFTER user headers, see below)
+    // NOTE: For empty POST body, do NOT send Content-Length: 0.
+    // Go's azuretls with Body: []byte{} sends no Content-Length header for empty body.
+    // Apple's authx rejects requests that include Content-Length: 0.
+    // (Go commit "remove content-length:0" for authx fix)
     let body_len: Option<usize> = if method == "POST" || method == "PUT" || method == "PATCH" {
-        Some(body.map(|b| b.len()).unwrap_or(0))
+        let len = body.map(|b| b.len()).unwrap_or(0);
+        if len == 0 {
+            None  // Don't send Content-Length: 0 for empty body (matches Go's behavior)
+        } else {
+            Some(len)
+        }
     } else if let Some(b) = body {
         if !b.is_empty() { Some(b.len()) } else { None }
     } else {
