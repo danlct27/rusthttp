@@ -104,6 +104,21 @@ impl CookieJar {
         self.cookies.lock().unwrap().clear();
     }
 
+    /// Remove all cookies with the given name that match the specified host (exact or domain match).
+    /// Used to remove stale session cookies (e.g. `aasp` from step1) before authx.
+    pub fn remove_for_host(&self, name: &str, host: &str) {
+        let mut jar = self.cookies.lock().unwrap();
+        jar.retain(|c| {
+            if c.name != name { return true; }
+            // Remove if host matches
+            if c.host_only {
+                c.domain != host.to_lowercase()
+            } else {
+                !domain_matches(host, &c.domain)
+            }
+        });
+    }
+
     /// Number of stored cookies.
     pub fn len(&self) -> usize {
         self.cookies.lock().unwrap().len()
