@@ -891,8 +891,13 @@ async fn execute_h1(
     let mut req = format!("{} {} HTTP/1.1\r\n", method, path);
     req.push_str(&format!("Host: {}\r\n", authority));
 
-    // Body length header (avoid sending for 0-byte bodies from GET/HEAD)
-    if let Some(b) = body {
+    // Body length header — always send Content-Length for POST/PUT/PATCH,
+    // even when the body is empty (required by HTTP/1.1 for request methods
+    // that MAY carry a body, including Apple's authx POST with 0-byte body).
+    if method == "POST" || method == "PUT" || method == "PATCH" {
+        let body_len = body.map(|b| b.len()).unwrap_or(0);
+        req.push_str(&format!("Content-Length: {}\r\n", body_len));
+    } else if let Some(b) = body {
         if !b.is_empty() {
             req.push_str(&format!("Content-Length: {}\r\n", b.len()));
         }
