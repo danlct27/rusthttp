@@ -912,17 +912,14 @@ async fn execute_h1(
     let mut req = format!("{} {} HTTP/1.1\r\n", method, path);
     req.push_str(&format!("Host: {}\r\n", authority));
 
-    // Body length header — always send Content-Length for POST/PUT/PATCH,
-    // even when the body is empty (required by HTTP/1.1 for request methods
-    // that MAY carry a body, including Apple's authx POST with 0-byte body).
-    if method == "POST" || method == "PUT" || method == "PATCH" {
-        let body_len = body.map(|b| b.len()).unwrap_or(0);
-        req.push_str(&format!("Content-Length: {}\r\n", body_len));
+    // Compute body length for Content-Length (added AFTER user headers, see below)
+    let body_len: Option<usize> = if method == "POST" || method == "PUT" || method == "PATCH" {
+        Some(body.map(|b| b.len()).unwrap_or(0))
     } else if let Some(b) = body {
-        if !b.is_empty() {
-            req.push_str(&format!("Content-Length: {}\r\n", b.len()));
-        }
-    }
+        if !b.is_empty() { Some(b.len()) } else { None }
+    } else {
+        None
+    };
 
     // Append regular headers (skip H2 pseudo-headers and hop-by-hop headers
     // that don't make sense over HTTP/1.1-inside-TLS)
@@ -936,6 +933,12 @@ async fn execute_h1(
             continue;
         }
         req.push_str(&format!("{}: {}\r\n", k, v));
+    }
+
+    // Add Content-Length AFTER user headers — matches Go/azuretls where Content-Length
+    // is appended last (before the header-body separator).
+    if let Some(len) = body_len {
+        req.push_str(&format!("Content-Length: {}\r\n", len));
     }
 
     req.push_str("\r\n");
