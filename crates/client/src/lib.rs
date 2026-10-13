@@ -592,34 +592,43 @@ impl<'a> RequestBuilder<'a> {
             (":path".into(), path.clone()),
         ];
 
-        // Add default headers Chrome sends (from client profile)
-        if !self.headers.iter().any(|(k, _)| k.to_lowercase() == "user-agent") {
+        // Add default headers from Chrome profile — but only when neither the
+        // per-request headers NOR the ClientBuilder default_headers already supply
+        // the key.  This lets callers set the real values via default_headers()
+        // (e.g. build_chrome_client puts CriOS/150 UA + sec-ch-ua there) and
+        // prevents the hardcoded Chrome-149-Windows profile fallbacks from leaking
+        // into requests that already know exactly what they want to send.
+        if !self.headers.iter().any(|(k, _)| k.to_lowercase() == "user-agent") &&
+           !self.client.default_headers.contains_key("user-agent") {
             h2_headers.push(("user-agent".into(), self.client.user_agent.clone()));
         }
-        if !self.headers.iter().any(|(k, _)| k.to_lowercase() == "accept") {
+        if !self.headers.iter().any(|(k, _)| k.to_lowercase() == "accept") &&
+           !self.client.default_headers.contains_key("accept") {
             h2_headers.push(("accept".into(), self.client.accept.clone()));
         }
-        if !self.headers.iter().any(|(k, _)| k.to_lowercase() == "accept-encoding") {
+        if !self.headers.iter().any(|(k, _)| k.to_lowercase() == "accept-encoding") &&
+           !self.client.default_headers.contains_key("accept-encoding") {
             h2_headers.push(("accept-encoding".into(), self.client.accept_encoding.clone()));
         }
-        if !self.headers.iter().any(|(k, _)| k.to_lowercase() == "accept-language") {
+        if !self.headers.iter().any(|(k, _)| k.to_lowercase() == "accept-language") &&
+           !self.client.default_headers.contains_key("accept-language") {
             h2_headers.push(("accept-language".into(), self.client.accept_language.clone()));
         }
 
-        // Chrome Client Hints (sec-ch-ua) — required by Cloudflare/DataDome
-        if !self.headers.iter().any(|(k, _)| k.to_lowercase() == "sec-ch-ua") {
+        // Chrome Client Hints (sec-ch-ua): only inject the profile fallback when
+        // neither per-request headers nor default_headers already supply sec-ch-ua.
+        if !self.headers.iter().any(|(k, _)| k.to_lowercase() == "sec-ch-ua") &&
+           !self.client.default_headers.contains_key("sec-ch-ua") {
             h2_headers.push(("sec-ch-ua".into(), self.client.sec_ch_ua.clone()));
             h2_headers.push(("sec-ch-ua-mobile".into(), self.client.sec_ch_ua_mobile.clone()));
             h2_headers.push(("sec-ch-ua-platform".into(), self.client.sec_ch_ua_platform.clone()));
         }
 
-        // sec-fetch headers — Chrome always sends these
-        if !self.headers.iter().any(|(k, _)| k.to_lowercase() == "sec-fetch-site") {
-            h2_headers.push(("sec-fetch-site".into(), "none".into()));
-            h2_headers.push(("sec-fetch-mode".into(), "navigate".into()));
-            h2_headers.push(("sec-fetch-user".into(), "?1".into()));
-            h2_headers.push(("sec-fetch-dest".into(), "document".into()));
-        }
+        // sec-fetch-* headers are NOT auto-injected.
+        // Callers that need them (navigation, shield CORS, Graviton checkoutx)
+        // add them explicitly in per-request headers.  Callers that must omit
+        // them (bag GET, AddToCart POST, fulfillment-messages) rely on this
+        // non-injection to match Go's azuretls OrderedHeaders behavior exactly.
 
         // Cookie jar — inject stored cookies for this domain
         if let Some(ref jar) = self.client.cookie_jar {
