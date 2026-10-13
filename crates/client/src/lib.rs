@@ -659,24 +659,29 @@ impl<'a> RequestBuilder<'a> {
         // them (bag GET, AddToCart POST, fulfillment-messages) rely on this
         // non-injection to match Go's azuretls OrderedHeaders behavior exactly.
 
-        // Cookie jar — inject stored cookies for this domain
-        if let Some(ref jar) = self.client.cookie_jar {
-            // Use the new URL-scoped cookie jar
-            if let Some(cookie_val) = jar.cookies(&url) {
-                h2_headers.push(("cookie".into(), cookie_val.to_str().unwrap_or("").to_string()));
-            }
+        // Cookie jar — inject stored cookies for this domain.
+        // IMPORTANT: cookies MUST come AFTER user-provided headers to match
+        // Go's azuretls behaviour (azuretls injects Cookie at the END of the
+        // header list, after all OrderedHeaders).  Placing cookie before user
+        // headers produces a different H2 header order that fails Akamai
+        // fingerprinting on endpoints like Apple's /shop/signIn/idms/authx.
+        let cookie_header: Option<String> = if let Some(ref jar) = self.client.cookie_jar {
+            jar.cookies(&url).map(|hv| hv.to_str().unwrap_or("").to_string())
         } else if let Ok(jar) = self.client.cookies.lock() {
-            // Legacy fallback: simple domain-keyed jar
-            if let Some(domain_cookies) = jar.get(host) {
+            jar.get(host).and_then(|domain_cookies| {
                 if !domain_cookies.is_empty() {
                     let cookie_str: String = domain_cookies.iter()
                         .map(|(n, v)| format!("{}={}", n, v))
                         .collect::<Vec<_>>()
                         .join("; ");
-                    h2_headers.push(("cookie".into(), cookie_str));
+                    Some(cookie_str)
+                } else {
+                    None
                 }
-            }
-        }
+            })
+        } else {
+            None
+        };
 
         // Default headers from ClientBuilder.default_headers()
         for (k, v) in self.client.default_headers.iter() {
@@ -691,6 +696,12 @@ impl<'a> RequestBuilder<'a> {
         // Append user-provided headers
         for (k, v) in &self.headers {
             h2_headers.push((k.clone(), v.clone()));
+        }
+
+        // Cookie appended LAST — matches Go/azuretls where Cookie is injected
+        // after all OrderedHeaders (confirmed by pcapng captures of Go authx).
+        if let Some(cookie_str) = cookie_header {
+            h2_headers.push(("cookie".into(), cookie_str));
         }
 
         // Step 5: Send request — reuse pooled connection or create new
