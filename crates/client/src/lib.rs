@@ -519,6 +519,16 @@ impl<'a> RequestBuilder<'a> {
         self
     }
 
+    /// Add headers from an ordered Vec, preserving insertion order exactly.
+    ///
+    /// Unlike `headers(HeaderMap)` which iterates a hash map in unspecified order,
+    /// this method appends each pair to self.headers in the order given.
+    /// Use this for requests where header ordering matters (e.g. authx with Akamai H2 fingerprinting).
+    pub fn headers_ordered(mut self, vec: Vec<(String, String)>) -> Self {
+        self.headers.extend(vec);
+        self
+    }
+
     /// Set the request body (accepts String, Vec<u8>, &[u8], etc).
     pub fn body(mut self, data: impl Into<Vec<u8>>) -> Self {
         self.body = Some(data.into());
